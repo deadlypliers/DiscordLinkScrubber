@@ -25,7 +25,7 @@ public sealed class LinkCleanerModule(ConfigStore store, AttachmentDownloader do
             ephemeral: true, allowedMentions: AllowedMentions.None);
     }
 
-    [SlashCommand("import", "Load rules and settings from an exported file (also replaces info link, prefix, ping and server-wide rule).")]
+    [SlashCommand("import", "Load rules and settings from an exported file.")]
     public async Task Import(
         [Summary(description: "The linkcleaner-config.json file")] IAttachment file,
         [Summary(description: "True to make this server's sites exactly match the file (default: merge by name)")] bool replace = false,

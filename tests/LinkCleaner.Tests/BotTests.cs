@@ -446,6 +446,14 @@ public sealed class BotTests : IDisposable
         Assert.Contains(interactions.SlashCommands, c => c.Module.SlashGroupName == "linkcleaner-pings" && c.Name == "off");
         Assert.Contains(interactions.SlashCommands, c => c.Module.SlashGroupName == "linkcleaner-pings" && c.Name == "on");
 
+        // Discord rejects the whole registration if any description is over 100 characters (this failed live).
+        Assert.All(interactions.SlashCommands, c =>
+        {
+            Assert.True(c.Description.Length <= 100, $"{c.Name}: {c.Description.Length} chars");
+            Assert.All(c.Parameters, p => Assert.True((p.Description?.Length ?? 0) <= 100, $"{c.Name}.{p.Name}"));
+        });
+        Assert.All(interactions.Modules, m => Assert.True((m.Description?.Length ?? 0) <= 100, m.Name));
+
         // Members must be able to use the opt-out: it must not inherit the admin-only default permission.
         var optOut = interactions.SlashCommands.First(c => c.Module.SlashGroupName == "linkcleaner-pings");
         Assert.Null(optOut.DefaultMemberPermissions);
