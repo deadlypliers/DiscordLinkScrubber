@@ -34,6 +34,9 @@ builder.Services.AddSingleton(new DiscordSocketClient(new DiscordSocketConfig
     // Message Content is a privileged intent: enable it in the Discord developer portal.
     GatewayIntents = GatewayIntents.Guilds | GatewayIntents.GuildMessages | GatewayIntents.MessageContent,
     AlwaysDownloadUsers = false,
+    // Never keep message text around: it is read once to look for links and then dropped.
+    // The rules-channel message (docs/rules-channel-message.md) promises this, so don't raise it.
+    MessageCacheSize = 0,
     LogLevel = LogSeverity.Info,
 }));
 builder.Services.AddSingleton(sp => new InteractionService(

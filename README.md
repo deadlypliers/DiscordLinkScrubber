@@ -12,6 +12,9 @@ posts viewable.
    logging in. If a link has tracking *and* is on one of these sites, the replacement uses the
    mirror of the cleaned link.
 
+A ready-to-paste explanation for your rules channel, including what the bot does and doesn't collect, is in
+[`docs/rules-channel-message.md`](docs/rules-channel-message.md).
+
 ## Behaviour details
 
 - Only links on the configured **site list** are touched. Query strings on unknown sites are left alone.
