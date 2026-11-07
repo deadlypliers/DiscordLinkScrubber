@@ -30,12 +30,14 @@ posts viewable.
 ## Setup
 
 1. Create an application at <https://discord.com/developers/applications>, add a bot, and copy its token.
-2. Under **Bot → Privileged Gateway Intents**, enable **Message Content Intent**.
+2. Under **Bot → Privileged Gateway Intents**, enable **Message Content Intent** and click *Save Changes*.
+   The other two intents stay off. Since this bot is for your own server, also turn **Public Bot** off so
+   nobody else can invite it.
 3. Invite the bot with scopes `bot applications.commands` and permissions *View Channels, Send Messages,
-   Send Messages in Threads, Read Message History, Manage Messages*
-   (permissions value `274877983744`):
+   Send Messages in Threads, Read Message History, Manage Messages, Embed Links*
+   (permissions value `274878000128`). Embed Links is what lets the mirror previews show up:
 
-   `https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot%20applications.commands&permissions=274877983744`
+   `https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot%20applications.commands&permissions=274878000128`
 
 4. Run it.
 
