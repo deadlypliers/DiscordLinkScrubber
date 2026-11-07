@@ -1,0 +1,12 @@
+services:
+  linkcleaner:
+    build: .
+    restart: unless-stopped
+    environment:
+      # Put DISCORD_TOKEN in a .env file next to this one (it is git-ignored).
+      DISCORD_TOKEN: ${DISCORD_TOKEN:?Set DISCORD_TOKEN in .env}
+    volumes:
+      - linkcleaner-data:/data
+
+volumes:
+  linkcleaner-data:

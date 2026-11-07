@@ -1,0 +1,92 @@
+# Link Cleaner
+
+A Discord bot that removes social-tracking parameters from shared links and makes login-walled
+posts viewable.
+
+1. **Tracking removal.** If a message contains a link with a tracking parameter (for example
+   YouTube's `?si=…`), the bot posts a replacement and deletes the original. The replacement
+   @-mentions the author (without pinging them), keeps what they wrote, swaps in the clean link,
+   and says why with a "Why?" link.
+2. **Mirrors for login-walled sites.** For X and Instagram posts the bot replies with an
+   embed-friendly mirror link (`fixupx.com`, `kkinstagram.com`), so the post shows in chat without
+   logging in. If a link has tracking *and* is on one of these sites, the replacement uses the
+   mirror of the cleaned link.
+
+## Behaviour details
+
+- Only links on the configured **site list** are touched. Query strings on unknown sites are left alone.
+- Parameters that make a link work (`v`, `t`, `list`, …) are kept. Only listed parameters are stripped.
+- Links in `<angle brackets>`, inline code and code blocks are left alone. `||spoilers||`, replies and
+  surrounding text are preserved. Pings in the original text are not repeated.
+- Messages with attachments or stickers are not deleted. The bot replies with the clean links instead.
+- Edits that add a link are handled like new messages.
+- The bot ignores other bots and webhooks.
+- The repost is always sent **before** the original is deleted, and the original is never deleted if the
+  repost fails.
+- Redirects (`instagram.com/share/…`, `t.co/…`) are **not** followed. Such links only have their
+  visible parameters stripped.
+- Only configuration is stored (SQLite). Message content is never saved or logged.
+
+## Setup
+
+1. Create an application at <https://discord.com/developers/applications>, add a bot, and copy its token.
+2. Under **Bot → Privileged Gateway Intents**, enable **Message Content Intent**.
+3. Invite the bot with scopes `bot applications.commands` and permissions *View Channels, Send Messages,
+   Send Messages in Threads, Read Message History, Manage Messages*
+   (permissions value `274877983744`):
+
+   `https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot%20applications.commands&permissions=274877983744`
+
+4. Run it.
+
+### Docker (recommended)
+
+```sh
+echo "DISCORD_TOKEN=your-token-here" > .env
+docker compose up -d --build
+```
+
+Configuration lives in the `linkcleaner-data` volume and survives rebuilds.
+
+### Without Docker
+
+```sh
+export DISCORD_TOKEN=your-token-here      # PowerShell: $env:DISCORD_TOKEN = "..."
+dotnet run --project src/LinkCleaner.Bot
+```
+
+The database defaults to `data/linkcleaner.db` next to the binary. Override it with `LINKCLEANER_DB`.
+
+## Configuration
+
+Everything is configured with slash commands, available to members with **Manage Server** by default
+(change that under *Server Settings → Integrations*). Answers are only visible to whoever ran the command.
+
+| Command | What it does |
+| --- | --- |
+| `/linkcleaner status` | Show the current configuration |
+| `/linkcleaner test text:…` | Preview what the bot would do with a message |
+| `/linkcleaner site list` / `show` | Inspect site rules |
+| `/linkcleaner site enable` / `disable` | Turn a site on or off |
+| `/linkcleaner site add` / `remove` / `reset` | Add a custom site, delete one, or restore a built-in site's defaults |
+| `/linkcleaner param add` / `remove` | Choose which query parameters are stripped (`utm_*` style prefixes work) |
+| `/linkcleaner host add` / `remove` | Treat more hostnames as the same site |
+| `/linkcleaner mirror set` / `clear` | Choose the mirror host for a site |
+| `/linkcleaner channel include` / `exclude` / `reset` / `clear` | Limit where the bot works (default: everywhere) |
+| `/linkcleaner role exempt` / `unexempt` | Exempt roles from cleaning |
+| `/linkcleaner infolink url:…` | Set the "Why?" link |
+| `/linkcleaner prefix emoji:…` | Set (or remove) the emoji before mirror replies |
+| `/linkcleaner modlog channel:…` | Log every action to a channel (off by default) |
+
+Built-in sites: YouTube, Instagram, X/Twitter, Facebook, Reddit, TikTok, Spotify, Twitch. Only X and
+Instagram have a mirror by default.
+
+## Development
+
+```sh
+dotnet test
+```
+
+- `src/LinkCleaner.Core`: the pure cleaning logic (no Discord, network or storage code).
+- `src/LinkCleaner.Bot`: Discord.Net host, SQLite config, slash commands.
+- `tests/LinkCleaner.Tests`: table-driven tests for the core plus thin tests for the host.
