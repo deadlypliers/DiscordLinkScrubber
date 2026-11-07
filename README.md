@@ -67,11 +67,10 @@ user-secrets:
 dotnet user-secrets set DISCORD_TOKEN <dev-token> --project src/LinkCleaner.Bot
 ```
 
-The `LinkCleaner.Bot` launch profile sets `DOTNET_ENVIRONMENT=Development`, which is what enables
-user-secrets, so start the app with that profile (the default in Rider, VS and `dotnet run`).
-Settings are looked up in this order, later sources winning: `appsettings.json`,
-`appsettings.{Environment}.json`, user-secrets (Development only), environment variables, command-line
-arguments. Production (Docker) uses plain environment variables.
+User-secrets are a fallback: they are read only when no `DISCORD_TOKEN` came from the environment,
+`appsettings*.json` or the command line, and they work in any IDE run configuration. (In the
+Development environment, which the `LinkCleaner.Bot` launch profile selects, they load as a normal
+configuration source instead.) Production (Docker) uses plain environment variables.
 
 Local config is stored in `data/linkcleaner.db` next to the built binary (git-ignored). Delete it to reset,
 or point `LINKCLEANER_DB` somewhere stable. If Discord rejects the token the app exits with a non-zero code.

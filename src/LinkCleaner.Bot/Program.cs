@@ -2,12 +2,18 @@
 using Discord.Interactions;
 using Discord.WebSocket;
 using LinkCleaner.Bot;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
 // Configuration sources, later ones win: appsettings.json, appsettings.{Environment}.json,
 // user-secrets (Development only), environment variables, command-line args.
 var builder = Host.CreateApplicationBuilder(args);
+
+// Local fallback: if nothing above supplied a token, try this machine's user-secrets, whatever the
+// environment is called. Containers have no secrets store, so this only ever applies when debugging.
+if (string.IsNullOrWhiteSpace(builder.Configuration["DISCORD_TOKEN"]))
+    builder.Configuration.AddUserSecrets(System.Reflection.Assembly.GetExecutingAssembly(), optional: true);
 
 if (string.IsNullOrWhiteSpace(builder.Configuration["DISCORD_TOKEN"]))
 {
