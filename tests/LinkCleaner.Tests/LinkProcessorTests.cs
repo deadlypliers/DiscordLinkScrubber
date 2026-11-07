@@ -317,6 +317,39 @@ public class LinkProcessorTests
         Assert.Equal("https://fixupx.com/u/status/123", Assert.Single(result.ReplacementLinks));
     }
 
+    // ---- Sites added in revision 2 ------------------------------------------------------
+
+    [Theory]
+    [InlineData("https://www.amazon.com/dp/B012345/ref=sr_1_1?tag=aff-20&th=1&psc=1&qid=99", "https://www.amazon.com/dp/B012345?th=1&psc=1")]
+    [InlineData("https://www.amazon.co.uk/Some-Title/dp/B012345/ref=nav?pd_rd_w=a&pf_rd_p=b", "https://www.amazon.co.uk/Some-Title/dp/B012345")]
+    [InlineData("https://www.ebay.com/itm/123?_trkparms=a&hash=item1", "https://www.ebay.com/itm/123?hash=item1")]
+    [InlineData("https://www.aliexpress.com/item/1.html?algo_pvid=a&scm=b&sk=c", "https://www.aliexpress.com/item/1.html")]
+    [InlineData("https://www.etsy.com/listing/1/x?click_key=a&ref=y", "https://www.etsy.com/listing/1/x?ref=y")]
+    [InlineData("https://www.linkedin.com/posts/a-1?trk=public&utm_source=s", "https://www.linkedin.com/posts/a-1")]
+    [InlineData("https://music.apple.com/us/album/x/1?i=2&itscg=3&itsct=4", "https://music.apple.com/us/album/x/1?i=2")]
+    [InlineData("https://www.netflix.com/title/80?jbv=80&trackId=1&tctx=2", "https://www.netflix.com/title/80?jbv=80")]
+    [InlineData("https://store.steampowered.com/app/10/?snr=1_5", "https://store.steampowered.com/app/10/")]
+    [InlineData("https://www.google.com/search?q=cats&ved=1&ei=2&sxsrf=3&gs_lcp=4", "https://www.google.com/search?q=cats")]
+    [InlineData("https://www.bing.com/search?q=cats&cvid=1&form=QBLH", "https://www.bing.com/search?q=cats")]
+    [InlineData("https://medium.com/@a/post-1?source=x&sk=friendkey", "https://medium.com/@a/post-1?sk=friendkey")]
+    public void New_sites_strip_tracking_and_keep_functional_params(string input, string expected)
+    {
+        var result = RunGlobal(input, GlobalRule.Default);
+
+        Assert.True(result.HasTrackingRemoved);
+        Assert.Equal(expected, result.RewrittenContent);
+    }
+
+    [Fact]
+    public void No_two_default_sites_share_a_host_and_names_are_unique()
+    {
+        var sites = DefaultSites.Create();
+
+        Assert.Equal(sites.Count, sites.Select(s => s.Name).Distinct().Count());
+        var hosts = sites.SelectMany(s => s.Hosts).ToList();
+        Assert.Equal(hosts.Count, hosts.Distinct().Count());
+    }
+
     // ---- Path-based cleaning ------------------------------------------------------------
 
     private static readonly SiteRule PathSite = new()
