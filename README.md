@@ -17,8 +17,17 @@ A ready-to-paste explanation for your rules channel, including what the bot does
 
 ## Behaviour details
 
-- Only links on the configured **site list** are touched. Query strings on unknown sites are left alone.
+- Links on the configured **site list** get that site's parameters stripped. Links on other sites are left
+  alone, with one exception: the **server-wide rule** removes `utm_*` marketing tags from *any* link on *any* site
+  (it also applies on top of every site's own list). Admins can edit its list or switch it off with
+  `/linkcleaner global …`.
 - Parameters that make a link work (`v`, `t`, `list`, …) are kept. Only listed parameters are stripped.
+- Some trackers live in the path rather than the query (Amazon's `/ref=nav_logo`). Sites can list regexes to
+  remove from the path with `/linkcleaner path add`.
+- **Built-in updates reach existing servers.** When a new release adds sites or parameters, sites you haven't
+  edited are refreshed automatically (their on/off switch is kept) and new built-in sites appear. A site you edited is
+  never overwritten: `/linkcleaner status` warns when it is behind, and `/linkcleaner site reset <site>` loads the
+  new rules. Built-in sites you deleted stay deleted.
 - Links in `<angle brackets>`, inline code and code blocks are left alone. `||spoilers||`, replies and
   surrounding text are preserved. Pings in the original text are not repeated.
 - **The original poster is pinged** in the "I removed your tracking link" message, so they know their
@@ -35,6 +44,8 @@ A ready-to-paste explanation for your rules channel, including what the bot does
 - Redirects (`instagram.com/share/…`, `t.co/…`) are **not** followed. Such links only have their
   visible parameters stripped.
 - Only configuration is stored (SQLite). Message content is never saved or logged.
+- Links in messages are never opened. The bot's only outbound request besides Discord itself is downloading the
+  config file an admin attaches to `/linkcleaner import`.
 
 ## Setup
 
@@ -99,6 +110,10 @@ Everything is configured with slash commands, available to members with **Manage
 | `/linkcleaner site enable` / `disable` | Turn a site on or off |
 | `/linkcleaner site add` / `remove` / `reset` | Add a custom site, delete one, or restore a built-in site's defaults |
 | `/linkcleaner param add` / `remove` | Choose which query parameters are stripped (`utm_*` style prefixes work) |
+| `/linkcleaner path add` / `remove` | Remove regex matches from a site's link paths (e.g. `/ref=[^/?#]*`) |
+| `/linkcleaner global list` / `add` / `remove` / `enable` / `disable` / `reset` | The server-wide parameter list applied to **every** link on any site (default: on, `utm_*`) |
+| `/linkcleaner export` | Download rules and settings as `linkcleaner-config.json` |
+| `/linkcleaner import file:… [replace] [confirm]` | Load an exported file: merges sites by name, or `replace:true confirm:true` makes the site list match the file. Also applies the file's server-wide rule, info link, mirror prefix and ping setting |
 | `/linkcleaner host add` / `remove` | Treat more hostnames as the same site |
 | `/linkcleaner mirror set` / `clear` | Choose the mirror host for a site |
 | `/linkcleaner channel include` / `exclude` / `reset` / `clear` | Limit where the bot works (default: everywhere) |
@@ -111,8 +126,15 @@ Everything is configured with slash commands, available to members with **Manage
 Available to **every member** (not just admins): `/linkcleaner-pings off` / `on` / `status`, to opt out of
 or back into being pinged. Preferences are stored per server.
 
-Built-in sites: YouTube, Instagram, X/Twitter, Facebook, Reddit, TikTok, Spotify, Twitch. Only X and
-Instagram have a mirror by default.
+Exports leave out everything specific to one server: channel rules, exempt roles, the mod-log channel and
+members' ping opt-outs. Importing downloads the attached file from Discord's attachment hosts only (no redirects,
+64 KB limit) and validates it completely before changing anything.
+
+Built-in sites: YouTube, Instagram, X/Twitter, Facebook, Reddit, TikTok, Spotify, Twitch, Amazon, eBay, AliExpress,
+Etsy, LinkedIn, Apple Music/Podcasts, Netflix, Steam, Google, Bing, Medium. Only X and Instagram have a mirror by
+default. Where each parameter list comes from is in [`docs/research/site-params.md`](docs/research/site-params.md);
+anything not confirmed there is deliberately left out. Threads, Pinterest, SoundCloud, Substack and others can be
+added with `/linkcleaner site add`.
 
 ## Development
 
