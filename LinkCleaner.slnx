@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/LinkCleaner.Bot/LinkCleaner.Bot.csproj" />
+    <Project Path="src/LinkCleaner.Core/LinkCleaner.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/LinkCleaner.Tests/LinkCleaner.Tests.csproj" />
+  </Folder>
+</Solution>
