@@ -149,7 +149,11 @@ public sealed class BotTests : IDisposable
         var cfg = NewStore().Get(Guild);
 
         var on = MessageHandler.BuildAllowedMentions(cfg, 42);
-        Assert.Equal(AllowedMentionTypes.Users, on.AllowedTypes);       // never @everyone or roles
+        // Discord.Net throws if the Users flag is combined with a UserIds list (this failed live),
+        // so only the explicit ID may be allowed, with no blanket type flags at all.
+        Assert.False((on.AllowedTypes ?? AllowedMentionTypes.None).HasFlag(AllowedMentionTypes.Users));
+        Assert.False((on.AllowedTypes ?? AllowedMentionTypes.None).HasFlag(AllowedMentionTypes.Everyone));
+        Assert.False((on.AllowedTypes ?? AllowedMentionTypes.None).HasFlag(AllowedMentionTypes.Roles));
         Assert.Equal([42UL], on.UserIds);                                // never anyone else in the text
         Assert.False(on.MentionRepliedUser);                             // never the replied-to author
         Assert.True(MessageHandler.ShouldPing(cfg, 42));

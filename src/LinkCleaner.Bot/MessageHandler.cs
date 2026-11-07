@@ -32,7 +32,7 @@ public sealed class MessageHandler(
     /// </summary>
     public static AllowedMentions BuildAllowedMentions(GuildConfig config, ulong authorId) =>
         ShouldPing(config, authorId)
-            ? new AllowedMentions(AllowedMentionTypes.Users) { UserIds = [authorId], MentionRepliedUser = false }
+            ? new AllowedMentions(AllowedMentionTypes.None) { UserIds = [authorId], MentionRepliedUser = false }
             : AllowedMentions.None;
 
     public Task OnMessageReceived(SocketMessage message)
