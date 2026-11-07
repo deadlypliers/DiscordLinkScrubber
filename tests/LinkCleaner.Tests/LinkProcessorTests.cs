@@ -246,4 +246,116 @@ public class LinkProcessorTests
         Assert.Equal(removed, wasRemoved);
         Assert.Equal(expected, result);
     }
+
+    // ---- Global rule: applies to every site --------------------------------------------
+
+    private static ProcessedMessage RunGlobal(string content, GlobalRule? global, IReadOnlyList<SiteRule>? sites = null) =>
+        LinkProcessor.Process(content, sites ?? DefaultSites.Create(), global);
+
+    [Theory]
+    [InlineData("https://example.com/a?utm_source=x&id=5", "https://example.com/a?id=5")]
+    [InlineData("https://news.example/story?utm_campaign=c", "https://news.example/story")]
+    [InlineData("read https://blog.example/p?UTM_Medium=m#top", "https://blog.example/p#top")]
+    public void Global_rule_cleans_utm_on_sites_that_are_not_listed(string input, string cleaned)
+    {
+        var result = RunGlobal(input, GlobalRule.Default);
+
+        Assert.True(result.HasTrackingRemoved);
+        var link = Assert.Single(result.Links);
+        Assert.Equal(GlobalRule.SiteName, link.Site);
+        Assert.Null(link.Mirror);
+        Assert.Contains(cleaned, result.RewrittenContent);
+    }
+
+    [Theory]
+    [InlineData("https://example.com/a?id=5")]
+    [InlineData("https://example.com/a")]
+    public void Global_rule_ignores_unlisted_links_without_tracking(string input)
+    {
+        var result = RunGlobal(input, GlobalRule.Default);
+
+        Assert.Empty(result.Links);
+        Assert.False(result.HasWork);
+    }
+
+    [Fact]
+    public void Global_rule_can_be_disabled_or_absent()
+    {
+        const string url = "https://example.com/a?utm_source=x";
+
+        Assert.False(RunGlobal(url, GlobalRule.Default with { Enabled = false }).HasWork);
+        Assert.False(RunGlobal(url, null).HasWork);
+    }
+
+    [Fact]
+    public void Global_rule_params_are_configurable()
+    {
+        var global = new GlobalRule(true, ["fbclid", "ref_*"]);
+
+        Assert.True(RunGlobal("https://example.com/a?fbclid=1", global).HasTrackingRemoved);
+        Assert.True(RunGlobal("https://example.com/a?ref_src=1", global).HasTrackingRemoved);
+        Assert.False(RunGlobal("https://example.com/a?utm_source=1", global).HasWork); // not in this list
+    }
+
+    [Fact]
+    public void Global_params_add_to_a_matching_sites_own_list()
+    {
+        // A site whose own list lost utm_* still gets it cleaned by the global rule.
+        var youtube = DefaultSites.Create().Single(s => s.Name == "youtube") with { StripParams = ["si"] };
+
+        var result = RunGlobal("https://www.youtube.com/watch?v=abc&utm_source=x&si=y", GlobalRule.Default, [youtube]);
+
+        Assert.Equal("https://www.youtube.com/watch?v=abc", result.RewrittenContent);
+        Assert.Equal("youtube", Assert.Single(result.Links).Site);
+    }
+
+    [Fact]
+    public void Global_rule_keeps_the_mirror_for_listed_sites()
+    {
+        var result = RunGlobal("https://x.com/u/status/123?utm_source=a", GlobalRule.Default);
+
+        Assert.Equal("https://fixupx.com/u/status/123", Assert.Single(result.ReplacementLinks));
+    }
+
+    // ---- Path-based cleaning ------------------------------------------------------------
+
+    private static readonly SiteRule PathSite = new()
+    {
+        Name = "shop",
+        Hosts = ["shop.example"],
+        StripPathPatterns = ["/ref=[^/?#]*"],
+    };
+
+    [Theory]
+    [InlineData("https://shop.example/dp/B0123/ref=nav_logo", "https://shop.example/dp/B0123")]
+    [InlineData("https://shop.example/dp/B0123/ref=nav_logo?th=1", "https://shop.example/dp/B0123?th=1")]
+    [InlineData("https://shop.example/dp/B0123/ref=a#frag", "https://shop.example/dp/B0123#frag")]
+    [InlineData("https://shop.example/ref=only", "https://shop.example/")]
+    public void Path_patterns_remove_tracking_from_the_path(string input, string expected)
+    {
+        var result = Run(input, [PathSite]);
+
+        Assert.True(result.HasTrackingRemoved);
+        Assert.Equal(expected, result.RewrittenContent);
+    }
+
+    [Fact]
+    public void Path_patterns_never_touch_the_query_or_clean_links()
+    {
+        Assert.False(Run("https://shop.example/dp/B0123?next=/ref=x", [PathSite]).HasTrackingRemoved);
+        Assert.False(Run("https://shop.example/dp/B0123", [PathSite]).HasWork);
+    }
+
+    [Theory]
+    [InlineData("([unclosed")]       // invalid regex
+    [InlineData("(a+)+$")]           // catastrophic backtracking, must hit the timeout and be skipped
+    public void Bad_path_patterns_are_ignored_instead_of_breaking_the_message(string pattern)
+    {
+        var site = PathSite with { StripPathPatterns = [pattern, "/ref=[^/?#]*"] };
+
+        var result = Run("https://shop.example/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!/ref=x", [site]);
+
+        Assert.True(result.HasTrackingRemoved); // the good pattern still ran
+        Assert.DoesNotContain("/ref=x", result.RewrittenContent);
+    }
 }

@@ -19,7 +19,8 @@ public static partial class LinkProcessor
 
     private const string TrailingJunk = ".,;:!?'\"*~_";
 
-    public static ProcessedMessage Process(string? content, IReadOnlyList<SiteRule> sites)
+    /// <param name="global">Params stripped from every link, including sites not in <paramref name="sites"/>. Null means none.</param>
+    public static ProcessedMessage Process(string? content, IReadOnlyList<SiteRule> sites, GlobalRule? global = null)
     {
         if (string.IsNullOrEmpty(content))
             return new ProcessedMessage("", "", [], false);
@@ -36,7 +37,7 @@ public static partial class LinkProcessor
                 continue;
 
             var raw = TrimTrailing(match.Value);
-            var result = Evaluate(raw, match.Index, sites);
+            var result = Evaluate(raw, match.Index, sites, global is { Enabled: true } ? global.StripParams : []);
             if (result is not null)
                 links.Add(result);
         }
@@ -53,7 +54,7 @@ public static partial class LinkProcessor
         return new ProcessedMessage(content, sb.ToString(), links, HasUserText(content));
     }
 
-    private static LinkResult? Evaluate(string url, int start, IReadOnlyList<SiteRule> sites)
+    private static LinkResult? Evaluate(string url, int start, IReadOnlyList<SiteRule> sites, IReadOnlyList<string> globalParams)
     {
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
             return null;
@@ -68,12 +69,58 @@ public static partial class LinkProcessor
             if (!isMirrorHost && !site.Hosts.Any(h => HostMatches(host, h)))
                 continue;
 
-            var (cleaned, removed) = StripParams(url, site.StripParams);
-            var mirror = isMirrorHost ? null : BuildMirror(cleaned, uri.AbsolutePath, site);
-            return new LinkResult(url, start, site.Name, cleaned, removed, mirror);
+            var (cleaned, removed) = StripParams(url, [.. site.StripParams, .. globalParams]);
+            var (noPath, pathRemoved) = StripPath(cleaned, site.StripPathPatterns);
+            var mirror = isMirrorHost ? null : BuildMirror(noPath, new Uri(noPath).AbsolutePath, site);
+            return new LinkResult(url, start, site.Name, noPath, removed || pathRemoved, mirror);
         }
 
-        return null;
+        // Not a listed site: only the global params apply, and links without them are left alone.
+        if (globalParams.Count == 0)
+            return null;
+        var (globalCleaned, globalRemoved) = StripParams(url, globalParams);
+        return globalRemoved ? new LinkResult(url, start, GlobalRule.SiteName, globalCleaned, true, null) : null;
+    }
+
+    /// <summary>Removes regex matches from the path only; query and fragment keep their exact text.</summary>
+    public static (string Url, bool Removed) StripPath(string url, IReadOnlyList<string> patterns)
+    {
+        if (patterns.Count == 0)
+            return (url, false);
+
+        var authorityStart = url.IndexOf("://", StringComparison.Ordinal);
+        if (authorityStart < 0)
+            return (url, false);
+        authorityStart += 3;
+        var pathStart = url.IndexOf('/', authorityStart);
+        if (pathStart < 0)
+            return (url, false);
+        var pathEnd = url.IndexOfAny(['?', '#'], pathStart);
+        if (pathEnd < 0)
+            pathEnd = url.Length;
+
+        var path = url[pathStart..pathEnd];
+        var changed = false;
+        foreach (var pattern in patterns)
+        {
+            try
+            {
+                var next = Regex.Replace(path, pattern, "", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(100));
+                if (next.Length == 0)
+                    next = "/"; // never leave an empty path
+                if (next != path)
+                {
+                    path = next;
+                    changed = true;
+                }
+            }
+            catch (Exception ex) when (ex is ArgumentException or RegexMatchTimeoutException)
+            {
+                // A bad or runaway pattern must never break link handling: skip it.
+            }
+        }
+
+        return changed ? (url[..pathStart] + path + url[pathEnd..], true) : (url, false);
     }
 
     private static string? BuildMirror(string cleaned, string path, SiteRule site)

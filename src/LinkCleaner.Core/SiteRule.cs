@@ -26,6 +26,12 @@ public sealed record SiteRule
     public IReadOnlyList<string> StripParams { get; init; } = [];
 
     /// <summary>
+    /// Regexes removed from the URL path (never the query), for trackers that live in the path,
+    /// e.g. Amazon's "/ref=nav_logo". Invalid or slow patterns are ignored.
+    /// </summary>
+    public IReadOnlyList<string> StripPathPatterns { get; init; } = [];
+
+    /// <summary>
     /// Embed-friendly mirror host (e.g. "fixupx.com") for sites that need a login to
     /// view. Null or empty means no mirror. This host is also treated as an alias of
     /// the site, so params get stripped from links that already use the mirror.
