@@ -5,16 +5,21 @@ using LinkCleaner.Bot;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
-if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISCORD_TOKEN")))
+// Configuration sources, later ones win: appsettings.json, appsettings.{Environment}.json,
+// user-secrets (Development only), environment variables, command-line args.
+var builder = Host.CreateApplicationBuilder(args);
+
+if (string.IsNullOrWhiteSpace(builder.Configuration["DISCORD_TOKEN"]))
 {
-    Console.Error.WriteLine("DISCORD_TOKEN is not set. See README.md.");
+    Console.Error.WriteLine(
+        "DISCORD_TOKEN is not set. Set it as an environment variable, or for local debugging run:\n" +
+        "  dotnet user-secrets set DISCORD_TOKEN <token> --project src/LinkCleaner.Bot\n" +
+        "See README.md.");
     return 1;
 }
 
-var databasePath = Environment.GetEnvironmentVariable("LINKCLEANER_DB")
+var databasePath = builder.Configuration["LINKCLEANER_DB"]
                    ?? Path.Combine(AppContext.BaseDirectory, "data", "linkcleaner.db");
-
-var builder = Host.CreateApplicationBuilder(args);
 
 builder.Services.AddMemoryCache();
 builder.Services.AddSingleton(new ConfigStore(databasePath));
@@ -32,4 +37,4 @@ builder.Services.AddSingleton<MessageHandler>();
 builder.Services.AddHostedService<BotService>();
 
 await builder.Build().RunAsync();
-return 0;
+return Environment.ExitCode; // non-zero if the bot shut itself down (e.g. rejected token)

@@ -57,6 +57,25 @@ dotnet run --project src/LinkCleaner.Bot
 
 The database defaults to `data/linkcleaner.db` next to the binary. Override it with `LINKCLEANER_DB`.
 
+### Debugging locally (Rider / Visual Studio / `dotnet run`)
+
+Use a **separate Discord application and token for development**, invited to a private test server, so
+a half-finished build never touches your real server. Then store its token outside the repo with
+user-secrets:
+
+```sh
+dotnet user-secrets set DISCORD_TOKEN <dev-token> --project src/LinkCleaner.Bot
+```
+
+The `LinkCleaner.Bot` launch profile sets `DOTNET_ENVIRONMENT=Development`, which is what enables
+user-secrets, so start the app with that profile (the default in Rider, VS and `dotnet run`).
+Settings are looked up in this order, later sources winning: `appsettings.json`,
+`appsettings.{Environment}.json`, user-secrets (Development only), environment variables, command-line
+arguments. Production (Docker) uses plain environment variables.
+
+Local config is stored in `data/linkcleaner.db` next to the built binary (git-ignored). Delete it to reset,
+or point `LINKCLEANER_DB` somewhere stable. If Discord rejects the token the app exits with a non-zero code.
+
 ## Configuration
 
 Everything is configured with slash commands, available to members with **Manage Server** by default

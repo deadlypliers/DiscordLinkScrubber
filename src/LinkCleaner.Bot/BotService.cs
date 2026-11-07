@@ -1,7 +1,9 @@
 using System.Reflection;
 using Discord;
+using Discord.Net;
 using Discord.Interactions;
 using Discord.WebSocket;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -13,11 +15,13 @@ public sealed class BotService(
     InteractionService interactions,
     IServiceProvider services,
     MessageHandler messages,
+    IConfiguration configuration,
+    IHostApplicationLifetime lifetime,
     ILogger<BotService> log) : IHostedService
 {
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        var token = Environment.GetEnvironmentVariable("DISCORD_TOKEN");
+        var token = configuration["DISCORD_TOKEN"];
         if (string.IsNullOrWhiteSpace(token))
             throw new InvalidOperationException("The DISCORD_TOKEN environment variable is not set.");
 
@@ -122,6 +126,22 @@ public sealed class BotService(
             _ => LogLevel.Trace,
         };
         log.Log(level, message.Exception, "[{Source}] {Message}", message.Source, message.Message);
+
+        // Discord.Net retries forever after a rejected token, which looks healthy but is dead. Fail fast instead.
+        if (IsAuthFailure(message.Exception) && !lifetime.ApplicationStopping.IsCancellationRequested)
+        {
+            log.LogCritical("Discord rejected the bot token. Check DISCORD_TOKEN. Shutting down.");
+            Environment.ExitCode = 1;
+            lifetime.StopApplication();
+        }
         return Task.CompletedTask;
     }
+
+    private static bool IsAuthFailure(Exception? ex) => ex switch
+    {
+        null => false,
+        HttpException { HttpCode: System.Net.HttpStatusCode.Unauthorized } => true,
+        ArgumentException { ParamName: "token" } => true,
+        _ => IsAuthFailure(ex.InnerException),
+    };
 }
