@@ -30,6 +30,7 @@ public sealed class LinkCleanerModule(ConfigStore store) : InteractionModuleBase
         sb.AppendLine($"**Info link:** <{cfg.InfoLink}>");
         sb.AppendLine($"**Mirror prefix:** {(cfg.MirrorPrefix.Length > 0 ? cfg.MirrorPrefix : "_none_")}");
         sb.AppendLine($"**Mod log:** {(cfg.ModLogChannelId is { } id ? $"<#{id}>" : "_off_")}");
+        sb.AppendLine($"**Ping poster:** {(cfg.PingAuthor ? "on" : "off")} ({cfg.PingOptOuts.Count} opted out)");
         sb.AppendLine($"**Only in channels:** {(cfg.IncludedChannels.Count > 0 ? string.Join(", ", cfg.IncludedChannels.Select(c => $"<#{c}>")) : "_all_")}");
         sb.AppendLine($"**Ignored channels:** {(cfg.ExcludedChannels.Count > 0 ? string.Join(", ", cfg.ExcludedChannels.Select(c => $"<#{c}>")) : "_none_")}");
         sb.AppendLine($"**Exempt roles:** {(cfg.ExemptRoles.Count > 0 ? string.Join(", ", cfg.ExemptRoles.Select(r => $"<@&{r}>")) : "_none_")}");
@@ -84,6 +85,15 @@ public sealed class LinkCleanerModule(ConfigStore store) : InteractionModuleBase
     {
         store.SetSetting(Context.Guild.Id, ConfigStore.ModLogKey, channel?.Id.ToString());
         await this.Say(channel is null ? "Mod log turned off." : $"Actions will be logged to {channel.Mention}.");
+    }
+
+    [SlashCommand("pings", "Choose whether the original poster is pinged when their link is reposted.")]
+    public async Task Pings([Summary(description: "True to ping the poster, false for a mention without a notification")] bool enabled)
+    {
+        store.SetSetting(Context.Guild.Id, ConfigStore.PingAuthorKey, enabled ? "1" : "0");
+        await this.Say(enabled
+            ? "The original poster will be pinged when their link is reposted. Members can opt out with `/linkcleaner-pings off`."
+            : "The original poster will still be named, but not pinged.");
     }
 
     // ---- /linkcleaner site … ------------------------------------------------------------

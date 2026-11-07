@@ -10,7 +10,9 @@ public sealed record GuildConfig(
     ulong? ModLogChannelId,
     IReadOnlySet<ulong> IncludedChannels,
     IReadOnlySet<ulong> ExcludedChannels,
-    IReadOnlySet<ulong> ExemptRoles)
+    IReadOnlySet<ulong> ExemptRoles,
+    bool PingAuthor,
+    IReadOnlySet<ulong> PingOptOuts)
 {
     /// <summary>
     /// Excluded channels never apply. If any channels are explicitly included, only those do;

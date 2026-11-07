@@ -1,3 +1,4 @@
+using Discord;
 using Discord.Interactions;
 using Discord.WebSocket;
 using LinkCleaner.Bot;
@@ -114,6 +115,56 @@ public sealed class BotTests : IDisposable
     }
 
     [Fact]
+    public void Pinging_the_poster_defaults_on_and_the_setting_persists()
+    {
+        var store = NewStore();
+        Assert.True(store.Get(Guild).PingAuthor);
+
+        store.SetSetting(Guild, ConfigStore.PingAuthorKey, "0");
+        Assert.False(NewStore().Get(Guild).PingAuthor);
+
+        store.SetSetting(Guild, ConfigStore.PingAuthorKey, "1");
+        Assert.True(NewStore().Get(Guild).PingAuthor);
+        Assert.True(store.Get(Guild + 1).PingAuthor); // other guilds unaffected
+    }
+
+    [Fact]
+    public void Ping_opt_outs_round_trip_and_are_per_guild()
+    {
+        var store = NewStore();
+        store.AddPingOptOut(Guild, 7);
+        store.AddPingOptOut(Guild, 7); // idempotent
+
+        Assert.Equal([7UL], store.Get(Guild).PingOptOuts);
+        Assert.Empty(store.Get(Guild + 1).PingOptOuts);
+        Assert.Equal([7UL], NewStore().Get(Guild).PingOptOuts); // survives restart
+
+        store.RemovePingOptOut(Guild, 7);
+        Assert.Empty(store.Get(Guild).PingOptOuts);
+    }
+
+    [Fact]
+    public void Only_the_poster_is_ever_pinged_and_only_when_allowed()
+    {
+        var cfg = NewStore().Get(Guild);
+
+        var on = MessageHandler.BuildAllowedMentions(cfg, 42);
+        Assert.Equal(AllowedMentionTypes.Users, on.AllowedTypes);       // never @everyone or roles
+        Assert.Equal([42UL], on.UserIds);                                // never anyone else in the text
+        Assert.False(on.MentionRepliedUser);                             // never the replied-to author
+        Assert.True(MessageHandler.ShouldPing(cfg, 42));
+
+        var serverOff = cfg with { PingAuthor = false };
+        Assert.False(MessageHandler.ShouldPing(serverOff, 42));
+        Assert.Equal(AllowedMentionTypes.None, MessageHandler.BuildAllowedMentions(serverOff, 42).AllowedTypes ?? AllowedMentionTypes.None);
+
+        var optedOut = cfg with { PingOptOuts = new HashSet<ulong> { 42 } };
+        Assert.False(MessageHandler.ShouldPing(optedOut, 42));
+        Assert.True(MessageHandler.ShouldPing(optedOut, 43)); // someone else still gets pinged
+        Assert.Equal(AllowedMentionTypes.None, MessageHandler.BuildAllowedMentions(optedOut, 42).AllowedTypes ?? AllowedMentionTypes.None);
+    }
+
+    [Fact]
     public async Task Slash_commands_build_into_a_valid_definition()
     {
         using var client = new DiscordSocketClient();
@@ -126,5 +177,13 @@ public sealed class BotTests : IDisposable
         Assert.NotEmpty(commands);
         Assert.Contains(interactions.SlashCommands, c => c.Module.SlashGroupName == "site" && c.Name == "enable");
         Assert.Contains(interactions.SlashCommands, c => c.Module.SlashGroupName == "linkcleaner" && c.Name == "status");
+        Assert.Contains(interactions.SlashCommands, c => c.Module.SlashGroupName == "linkcleaner" && c.Name == "pings");
+        Assert.Contains(interactions.SlashCommands, c => c.Module.SlashGroupName == "linkcleaner-pings" && c.Name == "off");
+        Assert.Contains(interactions.SlashCommands, c => c.Module.SlashGroupName == "linkcleaner-pings" && c.Name == "on");
+
+        // Members must be able to use the opt-out: it must not inherit the admin-only default permission.
+        var optOut = interactions.SlashCommands.First(c => c.Module.SlashGroupName == "linkcleaner-pings");
+        Assert.Null(optOut.DefaultMemberPermissions);
+        Assert.Null(optOut.Module.DefaultMemberPermissions);
     }
 }

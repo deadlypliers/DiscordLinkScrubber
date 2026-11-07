@@ -17,9 +17,23 @@ public sealed class MessageHandler(
     ILogger<MessageHandler> log)
 {
     private const int MaxMessageLength = 2000;
+    private const string OptOutHint = "\n-# Don't want these pings? Use /linkcleaner-pings off";
     private static readonly TimeSpan DedupeWindow = TimeSpan.FromHours(6);
 
     private readonly object _gate = new();
+
+    /// <summary>True if the poster should be notified: the server allows it and they haven't opted out.</summary>
+    public static bool ShouldPing(GuildConfig config, ulong authorId) =>
+        config.PingAuthor && !config.PingOptOuts.Contains(authorId);
+
+    /// <summary>
+    /// Only the poster can ever be notified. Mentions inside their own text (@everyone, roles, other
+    /// users) and the replied-to author stay suppressed either way.
+    /// </summary>
+    public static AllowedMentions BuildAllowedMentions(GuildConfig config, ulong authorId) =>
+        ShouldPing(config, authorId)
+            ? new AllowedMentions(AllowedMentionTypes.Users) { UserIds = [authorId], MentionRepliedUser = false }
+            : AllowedMentions.None;
 
     public Task OnMessageReceived(SocketMessage message)
     {
@@ -122,6 +136,12 @@ public sealed class MessageHandler(
             ? $"{header}\n\n**They said:**\n{processed.RewrittenContent}"
             : $"{header}\n\n{processed.RewrittenContent}";
 
+        // The hint goes in before the length check so an over-long body still takes the reply path.
+        var ping = ShouldPing(config, msg.Author.Id);
+        var mentions = BuildAllowedMentions(config, msg.Author.Id);
+        var footer = ping ? OptOutHint : "";
+        body += footer;
+
         // Attachments and stickers can't be carried over, and an over-long body can't be sent:
         // keep the original and reply with just the cleaned links instead.
         var canReplaceOriginal = msg.Attachments.Count == 0 && msg.Stickers.Count == 0 && body.Length <= MaxMessageLength;
@@ -134,13 +154,13 @@ public sealed class MessageHandler(
                 var replyTo = msg.Reference is { MessageId.IsSpecified: true } r
                     ? new MessageReference(r.MessageId.Value, failIfNotExists: false)
                     : null;
-                sent = await msg.Channel.SendMessageAsync(body, allowedMentions: AllowedMentions.None, messageReference: replyTo);
+                sent = await msg.Channel.SendMessageAsync(body, allowedMentions: mentions, messageReference: replyTo);
             }
             else
             {
                 var links = string.Join('\n', processed.ReplacementLinks);
-                sent = await msg.Channel.SendMessageAsync($"{header}\n\n{links}",
-                    allowedMentions: AllowedMentions.None,
+                sent = await msg.Channel.SendMessageAsync($"{header}\n\n{links}{footer}",
+                    allowedMentions: mentions,
                     messageReference: new MessageReference(msg.Id, failIfNotExists: false));
             }
         }
@@ -162,9 +182,10 @@ public sealed class MessageHandler(
             }
         }
 
-        log.LogInformation("Message {MessageId} in #{Channel}: removed tracking from {Count} link(s) ({Mode})",
+        log.LogInformation("Message {MessageId} in #{Channel}: removed tracking from {Count} link(s) ({Mode}, author {Pinged})",
             msg.Id, msg.Channel.Name, processed.Links.Count(l => l.TrackingRemoved),
-            canReplaceOriginal ? "reposted and deleted original" : "replied, original kept");
+            canReplaceOriginal ? "reposted and deleted original" : "replied, original kept",
+            ping ? "pinged" : "not pinged");
 
         var lines = processed.Links.Where(l => l.TrackingRemoved).Select(l => $"<{l.Original}> → <{l.Replacement}>");
         await ModLogAsync(config, msg, "🧹 Removed tracking", lines);

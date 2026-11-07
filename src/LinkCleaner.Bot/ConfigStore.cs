@@ -19,6 +19,7 @@ public sealed class ConfigStore
     public const string InfoLinkKey = "info_link";
     public const string MirrorPrefixKey = "mirror_prefix";
     public const string ModLogKey = "modlog_channel";
+    public const string PingAuthorKey = "ping_author";
 
     public const string IncludeKind = "include";
     public const string ExcludeKind = "exclude";
@@ -51,6 +52,9 @@ public sealed class ConfigStore
                 CREATE TABLE IF NOT EXISTS exempt_roles (
                     guild_id INTEGER NOT NULL, role_id INTEGER NOT NULL,
                     PRIMARY KEY (guild_id, role_id));
+                CREATE TABLE IF NOT EXISTS ping_optouts (
+                    guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
+                    PRIMARY KEY (guild_id, user_id));
                 """);
         }
     }
@@ -98,6 +102,14 @@ public sealed class ConfigStore
     public void RemoveExemptRole(ulong guildId, ulong roleId) => Mutate(guildId, c =>
         Exec(c, "DELETE FROM exempt_roles WHERE guild_id = $g AND role_id = $r",
             ("$g", (long)guildId), ("$r", (long)roleId)));
+
+    public void AddPingOptOut(ulong guildId, ulong userId) => Mutate(guildId, c =>
+        Exec(c, "INSERT OR IGNORE INTO ping_optouts (guild_id, user_id) VALUES ($g, $u)",
+            ("$g", (long)guildId), ("$u", (long)userId)));
+
+    public void RemovePingOptOut(ulong guildId, ulong userId) => Mutate(guildId, c =>
+        Exec(c, "DELETE FROM ping_optouts WHERE guild_id = $g AND user_id = $u",
+            ("$g", (long)guildId), ("$u", (long)userId)));
 
     // ---- Internals ---------------------------------------------------------------------
 
@@ -156,6 +168,9 @@ public sealed class ConfigStore
             var roles = Query(c, "SELECT role_id FROM exempt_roles WHERE guild_id = $g",
                 r => (ulong)r.GetInt64(0), ("$g", g)).ToHashSet();
 
+            var optOuts = Query(c, "SELECT user_id FROM ping_optouts WHERE guild_id = $g",
+                r => (ulong)r.GetInt64(0), ("$g", g)).ToHashSet();
+
             return new GuildConfig(
                 sites,
                 settings.GetValueOrDefault(InfoLinkKey) ?? DefaultInfoLink,
@@ -163,7 +178,10 @@ public sealed class ConfigStore
                 settings.TryGetValue(ModLogKey, out var modlog) && ulong.TryParse(modlog, out var modlogId) ? modlogId : null,
                 filters.Where(f => f.Kind == IncludeKind).Select(f => f.Id).ToHashSet(),
                 filters.Where(f => f.Kind == ExcludeKind).Select(f => f.Id).ToHashSet(),
-                roles);
+                roles,
+                // Pinging the poster is on unless an admin turned it off.
+                PingAuthor: settings.GetValueOrDefault(PingAuthorKey) != "0",
+                PingOptOuts: optOuts);
         }
     }
 

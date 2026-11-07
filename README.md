@@ -18,6 +18,12 @@ posts viewable.
 - Parameters that make a link work (`v`, `t`, `list`, …) are kept. Only listed parameters are stripped.
 - Links in `<angle brackets>`, inline code and code blocks are left alone. `||spoilers||`, replies and
   surrounding text are preserved. Pings in the original text are not repeated.
+- **The original poster is pinged** in the "I removed your tracking link" message, so they know their
+  post was replaced. Only the poster is ever notified; `@everyone`, roles and other users inside their
+  text stay silent, and mirror replies never ping anyone. Admins can switch this off for the whole server
+  (`/linkcleaner pings enabled:false`), and any member can opt out for themselves with
+  `/linkcleaner-pings off`. Opted-out members are still named in the message, just not notified. The
+  message carries a small line explaining the opt-out whenever it does ping.
 - Messages with attachments or stickers are not deleted. The bot replies with the clean links instead.
 - Edits that add a link are handled like new messages.
 - The bot ignores other bots and webhooks.
@@ -94,9 +100,13 @@ Everything is configured with slash commands, available to members with **Manage
 | `/linkcleaner mirror set` / `clear` | Choose the mirror host for a site |
 | `/linkcleaner channel include` / `exclude` / `reset` / `clear` | Limit where the bot works (default: everywhere) |
 | `/linkcleaner role exempt` / `unexempt` | Exempt roles from cleaning |
+| `/linkcleaner pings enabled:…` | Turn pinging the original poster on (default) or off for the whole server |
 | `/linkcleaner infolink url:…` | Set the "Why?" link |
 | `/linkcleaner prefix emoji:…` | Set (or remove) the emoji before mirror replies |
 | `/linkcleaner modlog channel:…` | Log every action to a channel (off by default) |
+
+Available to **every member** (not just admins): `/linkcleaner-pings off` / `on` / `status`, to opt out of
+or back into being pinged. Preferences are stored per server.
 
 Built-in sites: YouTube, Instagram, X/Twitter, Facebook, Reddit, TikTok, Spotify, Twitch. Only X and
 Instagram have a mirror by default.
