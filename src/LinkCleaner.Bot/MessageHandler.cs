@@ -1,0 +1,225 @@
+using Discord;
+using Discord.WebSocket;
+using LinkCleaner.Core;
+using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Logging;
+
+namespace LinkCleaner.Bot;
+
+/// <summary>
+/// Reacts to new and edited messages. Invariant: the repost is always sent before the original
+/// is deleted, and the original is never deleted if the repost fails.
+/// </summary>
+public sealed class MessageHandler(
+    DiscordSocketClient client,
+    ConfigStore store,
+    IMemoryCache cache,
+    ILogger<MessageHandler> log)
+{
+    private const int MaxMessageLength = 2000;
+    private static readonly TimeSpan DedupeWindow = TimeSpan.FromHours(6);
+
+    private readonly object _gate = new();
+
+    public Task OnMessageReceived(SocketMessage message)
+    {
+        _ = RunAsync(message);
+        return Task.CompletedTask;
+    }
+
+    public Task OnMessageUpdated(Cacheable<IMessage, ulong> before, SocketMessage after, ISocketMessageChannel channel)
+    {
+        // Discord also fires updates when embeds resolve: only react when the text itself changed.
+        if (before.HasValue && before.Value.Content == after.Content)
+            return Task.CompletedTask;
+
+        _ = RunAsync(after);
+        return Task.CompletedTask;
+    }
+
+    private async Task RunAsync(SocketMessage message)
+    {
+        try
+        {
+            await HandleAsync(message);
+        }
+        catch (Exception ex)
+        {
+            log.LogError(ex, "Unhandled error processing message {MessageId}", message.Id);
+        }
+    }
+
+    private async Task HandleAsync(SocketMessage raw)
+    {
+        if (raw is not SocketUserMessage msg) return;
+        if (msg.Author.IsBot || msg.Author.IsWebhook) return;
+        if (msg.Type is not (MessageType.Default or MessageType.Reply)) return;
+        if (msg.Channel is not SocketGuildChannel channel) return;
+
+        var guild = channel.Guild;
+        var config = store.Get(guild.Id);
+
+        var thread = msg.Channel as SocketThreadChannel;
+        if (!config.AppliesTo(channel.Id, thread?.ParentChannel?.Id)) return;
+        if (msg.Author is SocketGuildUser member && member.Roles.Any(r => config.ExemptRoles.Contains(r.Id))) return;
+
+        var processed = LinkProcessor.Process(msg.Content, config.Sites);
+        if (!processed.HasWork) return;
+
+        var perms = guild.CurrentUser.GetPermissions(channel);
+        var canSend = thread is not null ? perms.SendMessagesInThreads : perms.SendMessages;
+        if (!perms.ViewChannel || !canSend || !perms.ReadMessageHistory)
+        {
+            WarnOnce(channel, "send messages / read message history");
+            return;
+        }
+
+        IUserMessage anchor = msg; // what a mirror reply attaches to
+
+        if (processed.HasTrackingRemoved)
+        {
+            if (!perms.ManageMessages)
+            {
+                WarnOnce(channel, "manage messages");
+                return;
+            }
+            if (!Claim($"tracked:{msg.Id}"))
+                return;
+
+            var repost = await RepostAsync(msg, processed, config);
+            if (repost is null)
+                return;
+            anchor = repost;
+        }
+
+        if (processed.MirrorReplyLinks.Count > 0)
+            await SendMirrorReplyAsync(msg, anchor, processed, config);
+    }
+
+    /// <summary>Returns the message that now carries the cleaned links, or null if nothing was sent.</summary>
+    private async Task<IUserMessage?> RepostAsync(SocketUserMessage msg, ProcessedMessage processed, GuildConfig config)
+    {
+        var header = $"🧹 {msg.Author.Mention} shared a link with tracking info, so I removed it. [Why?](<{config.InfoLink}>)";
+        var body = processed.HasUserText
+            ? $"{header}\n\n**They said:**\n{processed.RewrittenContent}"
+            : $"{header}\n\n{processed.RewrittenContent}";
+
+        // Attachments and stickers can't be carried over, and an over-long body can't be sent:
+        // keep the original and reply with just the cleaned links instead.
+        var canReplaceOriginal = msg.Attachments.Count == 0 && msg.Stickers.Count == 0 && body.Length <= MaxMessageLength;
+
+        IUserMessage sent;
+        try
+        {
+            if (canReplaceOriginal)
+            {
+                var replyTo = msg.Reference is { MessageId.IsSpecified: true } r
+                    ? new MessageReference(r.MessageId.Value, failIfNotExists: false)
+                    : null;
+                sent = await msg.Channel.SendMessageAsync(body, allowedMentions: AllowedMentions.None, messageReference: replyTo);
+            }
+            else
+            {
+                var links = string.Join('\n', processed.ReplacementLinks);
+                sent = await msg.Channel.SendMessageAsync($"{header}\n\n{links}",
+                    allowedMentions: AllowedMentions.None,
+                    messageReference: new MessageReference(msg.Id, failIfNotExists: false));
+            }
+        }
+        catch (Exception ex)
+        {
+            log.LogError(ex, "Failed to send repost for message {MessageId}; original left in place", msg.Id);
+            return null;
+        }
+
+        if (canReplaceOriginal)
+        {
+            try
+            {
+                await msg.DeleteAsync();
+            }
+            catch (Exception ex)
+            {
+                log.LogWarning(ex, "Repost sent but deleting original message {MessageId} failed", msg.Id);
+            }
+        }
+
+        var lines = processed.Links.Where(l => l.TrackingRemoved).Select(l => $"<{l.Original}> → <{l.Replacement}>");
+        await ModLogAsync(config, msg, "🧹 Removed tracking", lines);
+        return sent;
+    }
+
+    private async Task SendMirrorReplyAsync(SocketUserMessage msg, IUserMessage anchor, ProcessedMessage processed, GuildConfig config)
+    {
+        List<string> fresh;
+        lock (_gate)
+        {
+            var sentBefore = cache.GetOrCreate($"mirrors:{msg.Id}", e =>
+            {
+                e.AbsoluteExpirationRelativeToNow = DedupeWindow;
+                return new HashSet<string>();
+            })!;
+            fresh = processed.MirrorReplyLinks.Where(sentBefore.Add).ToList();
+        }
+        if (fresh.Count == 0)
+            return;
+
+        var prefix = config.MirrorPrefix.Trim();
+        var text = (prefix.Length > 0 ? prefix + " " : "") + string.Join('\n', fresh);
+
+        try
+        {
+            await msg.Channel.SendMessageAsync(text,
+                allowedMentions: AllowedMentions.None,
+                messageReference: new MessageReference(anchor.Id, failIfNotExists: false));
+        }
+        catch (Exception ex)
+        {
+            log.LogError(ex, "Failed to send mirror reply for message {MessageId}", msg.Id);
+            return;
+        }
+
+        var lines = processed.Links
+            .Where(l => !l.TrackingRemoved && l.Mirror is not null)
+            .Select(l => $"<{l.Original}> → <{l.Mirror}>");
+        await ModLogAsync(config, msg, "🪞 Posted mirror", lines);
+    }
+
+    private async Task ModLogAsync(GuildConfig config, SocketUserMessage msg, string title, IEnumerable<string> lines)
+    {
+        if (config.ModLogChannelId is not { } channelId || client.GetChannel(channelId) is not IMessageChannel modLog)
+            return;
+
+        var text = $"{title} — {msg.Author.Mention} (`{msg.Author.Id}`) in <#{msg.Channel.Id}>\n{string.Join('\n', lines)}";
+        if (text.Length > MaxMessageLength)
+            text = text[..(MaxMessageLength - 1)] + "…";
+
+        try
+        {
+            await modLog.SendMessageAsync(text, allowedMentions: AllowedMentions.None);
+        }
+        catch (Exception ex)
+        {
+            log.LogWarning(ex, "Could not write to mod-log channel {ChannelId}", channelId);
+        }
+    }
+
+    /// <summary>True the first time a key is seen within the dedupe window (so edits can't trigger a second repost).</summary>
+    private bool Claim(string key)
+    {
+        lock (_gate)
+        {
+            if (cache.TryGetValue(key, out _))
+                return false;
+            cache.Set(key, true, DedupeWindow);
+            return true;
+        }
+    }
+
+    private void WarnOnce(SocketGuildChannel channel, string missing)
+    {
+        if (Claim($"warned:{channel.Id}"))
+            log.LogWarning("Missing permission ({Missing}) in #{Channel} ({ChannelId}) of {Guild}; skipping messages there",
+                missing, channel.Name, channel.Id, channel.Guild.Name);
+    }
+}
