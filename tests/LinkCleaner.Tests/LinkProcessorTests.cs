@@ -12,6 +12,8 @@ public class LinkProcessorTests
     [Theory]
     // YouTube: share id removed, functional params kept
     [InlineData("https://youtu.be/dQw4w9WgXcQ?si=abc123", "https://youtu.be/dQw4w9WgXcQ")]
+    [InlineData("https://youtu.be/yATmNdBgydc?si=p00pbu77", "https://youtu.be/yATmNdBgydc")]
+    [InlineData("https://youtu.be/yATmNdBgydc?is=p00pbu77", "https://youtu.be/yATmNdBgydc")]
     [InlineData("https://www.youtube.com/watch?v=abc&si=xyz", "https://www.youtube.com/watch?v=abc")]
     [InlineData("https://youtube.com/watch?si=x&v=abc", "https://youtube.com/watch?v=abc")]
     [InlineData("https://youtu.be/abc?t=30&si=zzz", "https://youtu.be/abc?t=30")]

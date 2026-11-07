@@ -9,7 +9,7 @@ public static class DefaultSites
         {
             Name = "youtube",
             Hosts = ["youtube.com", "youtu.be", "youtube-nocookie.com"],
-            StripParams = ["si", "feature", "pp", "utm_*", "fbclid", "gclid"],
+            StripParams = ["si", "is", "feature", "pp", "utm_*", "fbclid", "gclid"],
         },
         new SiteRule
         {
