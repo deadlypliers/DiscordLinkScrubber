@@ -1,6 +1,6 @@
 # Rules-channel message
 
-Paste-ready text for the server's rules channel. **1,554 characters** (Discord's limit is 2000). Copy
+Paste-ready text for the server's rules channel. **1,570 characters** (Discord's limit is 2000). Copy
 everything between the two horizontal rules.
 
 If the bot's data handling changes (new stored data, new logging, the mod log turned off), update both this
@@ -11,7 +11,7 @@ message and the audit table below.
 ## 🧹 About LinkScrubber (our link-cleaning bot)
 
 **What's a tracking link?**
-Share buttons on YouTube, Instagram, X, Facebook, TikTok and others add a hidden ID to links (like `?si=abc123` or `?igsh=…`). That ID can tie a link to the person who shared it, and to everyone who clicks it, so these sites can map who knows who and who shares with whom. It does nothing for the person actually watching.
+Share buttons on YouTube, Instagram, X, Facebook, TikTok, Amazon, Google and others add a hidden ID to links (like `?si=abc123` or `?igsh=…`). That ID can tie a link to the person who shared it, and to everyone who clicks it, so these sites can map who knows who and who shares with whom. It does nothing for the person actually watching.
 
 **What the bot does**
 • Spots links with tracking IDs (and `utm_` marketing tags on any link), deletes that message, and reposts it with a clean link, your text intact, and a tag so you know it was yours.
@@ -35,6 +35,11 @@ Questions? Ask a mod.
 ## Notes
 
 - The mod-log bullet is true only while `/linkcleaner modlog` is set to a channel. Delete the bullet if you turn it off.
+- The "`utm_` marketing tags on any link" wording is true only while the server-wide rule is on (the default).
+  If you run `/linkcleaner global disable`, delete that parenthesis. If you add parameters to the list
+  (`/linkcleaner global add fbclid`), the wording still holds.
+- The site names in the "What's a tracking link?" paragraph are examples of built-in sites. Edit them if you
+  remove sites or add your own.
 - Discord's own retention of messages is outside the bot's control. The message deliberately doesn't promise
   that a deleted original disappears from Discord's systems.
 - "Can tie a link to the person who shared it" is hedged on purpose. The article the bot links to explains
@@ -45,7 +50,7 @@ Questions? Ask a mod.
 | Claim in the message | Backed by |
 | --- | --- |
 | Reads text only to find links, in memory | `MessageHandler.HandleAsync` calls `LinkProcessor.Process`; nothing is persisted; `MessageCacheSize = 0` in `Program.cs` |
-| Saves settings and opt-out IDs only | `ConfigStore` tables: `sites`, `settings`, `channel_filters`, `exempt_roles`, `ping_optouts` |
+| Saves settings and opt-out IDs only | `ConfigStore` tables: `sites`, `settings`, `channel_filters`, `exempt_roles`, `ping_optouts`, `deleted_defaults` (names of built-in sites an admin removed). Exported config files contain only sites, the server-wide rule, info link, mirror prefix and the ping setting, never member IDs |
 | Mod log records who, where, original and cleaned link | `MessageHandler.ModLogAsync`, only when a mod-log channel is set |
 | Doesn't log your messages | Every `log.Log*` call records message id, channel name, counts or site names; never text, URLs or user ids |
 | Doesn't open or follow links | The only `HttpClient` use is `AttachmentDownloader`, which fetches an admin's `/linkcleaner import` file and refuses any host except Discord's attachment hosts (and never follows redirects). Nothing fetches URLs from messages |
