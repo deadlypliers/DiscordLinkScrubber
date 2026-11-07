@@ -20,6 +20,8 @@ public sealed class ConfigStore
     public const string MirrorPrefixKey = "mirror_prefix";
     public const string ModLogKey = "modlog_channel";
     public const string PingAuthorKey = "ping_author";
+    public const string GlobalEnabledKey = "global_enabled";
+    public const string GlobalParamsKey = "global_params";
 
     public const string IncludeKind = "include";
     public const string ExcludeKind = "exclude";
@@ -181,9 +183,27 @@ public sealed class ConfigStore
                 roles,
                 // Pinging the poster is on unless an admin turned it off.
                 PingAuthor: settings.GetValueOrDefault(PingAuthorKey) != "0",
-                PingOptOuts: optOuts);
+                PingOptOuts: optOuts,
+                Global: LoadGlobal(settings));
         }
     }
+
+    /// <summary>Unset settings mean the default (on, utm_*), so existing servers get it without any migration.</summary>
+    private static GlobalRule LoadGlobal(Dictionary<string, string> settings)
+    {
+        var enabled = settings.GetValueOrDefault(GlobalEnabledKey) != "0";
+        var parameters = GlobalRule.Default.StripParams;
+        if (settings.TryGetValue(GlobalParamsKey, out var json))
+        {
+            try { parameters = JsonSerializer.Deserialize<List<string>>(json) ?? parameters; }
+            catch (JsonException) { /* corrupt value: fall back to the default */ }
+        }
+        return new GlobalRule(enabled, parameters);
+    }
+
+    /// <summary>Replaces the server-wide strip list; null restores the default.</summary>
+    public void SetGlobalParams(ulong guildId, IReadOnlyList<string>? parameters) =>
+        SetSetting(guildId, GlobalParamsKey, parameters is null ? null : JsonSerializer.Serialize(parameters));
 
     private static void Exec(SqliteConnection c, string sql, params (string Name, object? Value)[] args)
     {

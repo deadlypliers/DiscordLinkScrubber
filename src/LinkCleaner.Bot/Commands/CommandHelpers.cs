@@ -56,9 +56,13 @@ internal static partial class CommandHelpers
         return $"**{s.Name}** — {(s.Enabled ? "enabled" : "**disabled**")}\n" +
                $"Hosts: {Join(s.Hosts)}\n" +
                $"Stripped params: {Join(s.StripParams)}\n" +
+               (s.StripPathPatterns.Count > 0 ? $"Stripped path patterns: {Join(s.StripPathPatterns)}\n" : "") +
                $"Mirror: {mirror}" +
                (s.MirrorHost is { Length: > 0 } && s.MirrorPathPattern is not null ? $" (paths matching `{s.MirrorPathPattern}`)" : "");
     }
+
+    public static string DescribeGlobal(GlobalRule g) =>
+        $"{(g.Enabled ? "on" : "**off**")}, removing {Join(g.StripParams)}";
 
     public static string Join(IEnumerable<string> values)
     {

@@ -85,7 +85,7 @@ public sealed class MessageHandler(
             return;
         }
 
-        var processed = LinkProcessor.Process(msg.Content, config.Sites);
+        var processed = LinkProcessor.Process(msg.Content, config.Sites, config.GlobalRule);
         if (!processed.HasWork)
         {
             if (processed.Links.Count > 0)

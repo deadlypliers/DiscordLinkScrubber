@@ -169,6 +169,48 @@ public sealed class BotTests : IDisposable
     }
 
     [Fact]
+    public void Global_rule_defaults_on_with_utm_and_persists_changes_per_guild()
+    {
+        var store = NewStore();
+        Assert.Equal(GlobalRule.Default.StripParams, store.Get(Guild).GlobalRule.StripParams);
+        Assert.True(store.Get(Guild).GlobalRule.Enabled);
+
+        store.SetGlobalParams(Guild, ["utm_*", "fbclid"]);
+        store.SetSetting(Guild, ConfigStore.GlobalEnabledKey, "0");
+
+        var reloaded = NewStore().Get(Guild).GlobalRule;
+        Assert.Equal(["utm_*", "fbclid"], reloaded.StripParams);
+        Assert.False(reloaded.Enabled);
+        Assert.True(store.Get(Guild + 1).GlobalRule.Enabled); // other guilds unaffected
+
+        store.SetSetting(Guild, ConfigStore.GlobalEnabledKey, null);
+        store.SetGlobalParams(Guild, null);
+        Assert.Equal(GlobalRule.Default, NewStore().Get(Guild).GlobalRule with { StripParams = GlobalRule.Default.StripParams });
+        Assert.Equal(GlobalRule.Default.StripParams, NewStore().Get(Guild).GlobalRule.StripParams);
+    }
+
+    [Fact]
+    public void Corrupt_global_params_fall_back_to_the_default()
+    {
+        var store = NewStore();
+        store.SetSetting(Guild, ConfigStore.GlobalParamsKey, "not json");
+
+        Assert.Equal(GlobalRule.Default.StripParams, store.Get(Guild).GlobalRule.StripParams);
+    }
+
+    [Fact]
+    public void Path_patterns_survive_a_save_and_old_rows_without_them_still_load()
+    {
+        var store = NewStore();
+        var x = store.Get(Guild).Sites.Single(s => s.Name == "x");
+        store.SaveSite(Guild, x with { StripPathPatterns = ["/ref=[^/?#]*"] });
+        Assert.Equal(["/ref=[^/?#]*"], NewStore().Get(Guild).Sites.Single(s => s.Name == "x").StripPathPatterns);
+
+        var legacy = System.Text.Json.JsonSerializer.Deserialize<SiteRule>("""{"Name":"old","Hosts":["old.example"],"StripParams":["a"]}""")!;
+        Assert.Empty(legacy.StripPathPatterns);
+    }
+
+    [Fact]
     public async Task Slash_commands_build_into_a_valid_definition()
     {
         using var client = new DiscordSocketClient();
@@ -182,6 +224,9 @@ public sealed class BotTests : IDisposable
         Assert.Contains(interactions.SlashCommands, c => c.Module.SlashGroupName == "site" && c.Name == "enable");
         Assert.Contains(interactions.SlashCommands, c => c.Module.SlashGroupName == "linkcleaner" && c.Name == "status");
         Assert.Contains(interactions.SlashCommands, c => c.Module.SlashGroupName == "linkcleaner" && c.Name == "pings");
+        Assert.Contains(interactions.SlashCommands, c => c.Module.SlashGroupName == "global" && c.Name == "add");
+        Assert.Contains(interactions.SlashCommands, c => c.Module.SlashGroupName == "global" && c.Name == "disable");
+        Assert.Contains(interactions.SlashCommands, c => c.Module.SlashGroupName == "path" && c.Name == "add");
         Assert.Contains(interactions.SlashCommands, c => c.Module.SlashGroupName == "linkcleaner-pings" && c.Name == "off");
         Assert.Contains(interactions.SlashCommands, c => c.Module.SlashGroupName == "linkcleaner-pings" && c.Name == "on");
 

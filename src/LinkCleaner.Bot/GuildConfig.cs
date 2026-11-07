@@ -12,8 +12,12 @@ public sealed record GuildConfig(
     IReadOnlySet<ulong> ExcludedChannels,
     IReadOnlySet<ulong> ExemptRoles,
     bool PingAuthor,
-    IReadOnlySet<ulong> PingOptOuts)
+    IReadOnlySet<ulong> PingOptOuts,
+    GlobalRule? Global = null)
 {
+    /// <summary>The server-wide strip list; the built-in default (utm_*) unless an admin changed it.</summary>
+    public GlobalRule GlobalRule => Global ?? GlobalRule.Default;
+
     /// <summary>
     /// Excluded channels never apply. If any channels are explicitly included, only those do;
     /// otherwise every channel does. A thread follows its parent channel's rules.

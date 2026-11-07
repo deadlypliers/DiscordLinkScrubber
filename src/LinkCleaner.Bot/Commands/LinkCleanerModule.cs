@@ -27,6 +27,7 @@ public sealed class LinkCleanerModule(ConfigStore store) : InteractionModuleBase
             sb.AppendLine($"- {(s.Enabled ? "✅" : "⛔")} `{s.Name}`: {s.StripParams.Count} params{mirror}");
         }
         sb.AppendLine();
+        sb.AppendLine($"**Every link, any site:** {CommandHelpers.DescribeGlobal(cfg.GlobalRule)}");
         sb.AppendLine($"**Info link:** <{cfg.InfoLink}>");
         sb.AppendLine($"**Mirror prefix:** {(cfg.MirrorPrefix.Length > 0 ? cfg.MirrorPrefix : "_none_")}");
         sb.AppendLine($"**Mod log:** {(cfg.ModLogChannelId is { } id ? $"<#{id}>" : "_off_")}");
@@ -40,7 +41,8 @@ public sealed class LinkCleanerModule(ConfigStore store) : InteractionModuleBase
     [SlashCommand("test", "Show what the bot would do with a message, without posting anything.")]
     public async Task Test([Summary(description: "Paste a message or link to test")] string text)
     {
-        var result = LinkProcessor.Process(text, store.Get(Context.Guild.Id).Sites);
+        var cfg = store.Get(Context.Guild.Id);
+        var result = LinkProcessor.Process(text, cfg.Sites, cfg.GlobalRule);
         if (!result.HasWork)
         {
             await this.Say("Nothing to do: no tracking params found and no mirror applies.");
@@ -220,6 +222,94 @@ public sealed class LinkCleanerModule(ConfigStore store) : InteractionModuleBase
 
             store.SaveSite(Context.Guild.Id, rule with { StripParams = remaining });
             await this.Say($"`{site}` links will keep `{name}` from now on.");
+        }
+    }
+
+    // ---- /linkcleaner global … ----------------------------------------------------------
+
+    [Group("global", "Parameters removed from links on ANY site, listed or not (default: utm_*).")]
+    public sealed class GlobalGroup(ConfigStore store) : InteractionModuleBase<SocketInteractionContext>
+    {
+        [SlashCommand("list", "Show the server-wide strip list.")]
+        public Task List() => this.Say(CommandHelpers.DescribeGlobal(store.Get(Context.Guild.Id).GlobalRule));
+
+        [SlashCommand("add", "Strip a parameter from every link (e.g. fbclid, gclid, msclkid, or a prefix like utm_*).")]
+        public async Task Add([Summary(description: "Parameter name; end with * for a prefix, e.g. utm_*")] string name)
+        {
+            name = name.Trim();
+            var global = store.Get(Context.Guild.Id).GlobalRule;
+            if (!CommandHelpers.IsValidParamName(name)) { await this.Say("That isn't a valid parameter name."); return; }
+            if (global.StripParams.Contains(name, StringComparer.OrdinalIgnoreCase)) { await this.Say($"`{name}` is already on the list."); return; }
+
+            store.SetGlobalParams(Context.Guild.Id, [.. global.StripParams, name]);
+            await this.Say($"`{name}` will now be removed from every link." + (global.Enabled ? "" : " (The global rule is currently disabled: `/linkcleaner global enable`.)"));
+        }
+
+        [SlashCommand("remove", "Stop stripping a parameter from every link.")]
+        public async Task Remove([Summary(description: "Parameter name exactly as listed")] string name)
+        {
+            name = name.Trim();
+            var global = store.Get(Context.Guild.Id).GlobalRule;
+            var remaining = global.StripParams.Where(p => !p.Equals(name, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (remaining.Count == global.StripParams.Count) { await this.Say($"`{name}` isn't on the list."); return; }
+
+            store.SetGlobalParams(Context.Guild.Id, remaining);
+            await this.Say($"`{name}` is no longer removed from every link. Site rules still apply.");
+        }
+
+        [SlashCommand("enable", "Turn the server-wide rule on.")]
+        public async Task Enable()
+        {
+            store.SetSetting(Context.Guild.Id, ConfigStore.GlobalEnabledKey, "1");
+            await this.Say("The server-wide rule is on.");
+        }
+
+        [SlashCommand("disable", "Turn the server-wide rule off (listed sites keep their own params).")]
+        public async Task Disable()
+        {
+            store.SetSetting(Context.Guild.Id, ConfigStore.GlobalEnabledKey, "0");
+            await this.Say("The server-wide rule is off. Only the per-site rules apply now.");
+        }
+
+        [SlashCommand("reset", "Back to the default: on, stripping utm_*.")]
+        public async Task Reset()
+        {
+            store.SetSetting(Context.Guild.Id, ConfigStore.GlobalEnabledKey, null);
+            store.SetGlobalParams(Context.Guild.Id, null);
+            await this.Say("Restored the default: on, stripping `utm_*`.");
+        }
+    }
+
+    // ---- /linkcleaner path … ------------------------------------------------------------
+
+    [Group("path", "Remove trackers that live in a link's path (e.g. Amazon's /ref=…).")]
+    public sealed class PathGroup(ConfigStore store) : InteractionModuleBase<SocketInteractionContext>
+    {
+        [SlashCommand("add", "Remove text matching a regex from this site's link paths.")]
+        public async Task Add(
+            [Autocomplete(typeof(SiteAutocomplete))] string site,
+            [Summary(description: "Regex matched against the path only, e.g. /ref=[^/?#]*")] string pattern)
+        {
+            var rule = store.Get(Context.Guild.Id).Sites.FirstOrDefault(s => s.Name == site);
+            if (rule is null) { await this.Say($"No site named `{site}`."); return; }
+            if (pattern.Length is 0 or > 200 || !CommandHelpers.IsValidRegex(pattern)) { await this.Say("That isn't a valid regex (200 characters max)."); return; }
+            if (rule.StripPathPatterns.Contains(pattern)) { await this.Say("That pattern is already listed."); return; }
+
+            store.SaveSite(Context.Guild.Id, rule with { StripPathPatterns = [.. rule.StripPathPatterns, pattern] });
+            await this.Say($"`{site}` link paths will have text matching `{pattern}` removed.");
+        }
+
+        [SlashCommand("remove", "Stop removing a path pattern.")]
+        public async Task Remove([Autocomplete(typeof(SiteAutocomplete))] string site, [Summary(description: "The pattern exactly as listed")] string pattern)
+        {
+            var rule = store.Get(Context.Guild.Id).Sites.FirstOrDefault(s => s.Name == site);
+            if (rule is null) { await this.Say($"No site named `{site}`."); return; }
+
+            var remaining = rule.StripPathPatterns.Where(p => p != pattern).ToList();
+            if (remaining.Count == rule.StripPathPatterns.Count) { await this.Say("That pattern isn't listed."); return; }
+
+            store.SaveSite(Context.Guild.Id, rule with { StripPathPatterns = remaining });
+            await this.Say($"Removed the path pattern from `{site}`.");
         }
     }
 
