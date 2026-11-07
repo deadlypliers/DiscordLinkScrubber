@@ -312,12 +312,124 @@ public sealed class BotTests : IDisposable
         Assert.Equal(DefaultSites.Revision, reset.DefaultRevision);
     }
 
+    // ---- Export / import ----------------------------------------------------------------
+
+    [Fact]
+    public void Export_then_import_reproduces_the_rules_in_another_server()
+    {
+        var source = NewStore();
+        var google = source.Get(Guild).Sites.Single(s => s.Name == "google");
+        source.SaveSite(Guild, google with { StripParams = [.. google.StripParams, "extra"] });
+        source.SetGlobalParams(Guild, ["utm_*", "fbclid"]);
+        source.SetSetting(Guild, ConfigStore.PingAuthorKey, "0");
+        source.SetSetting(Guild, ConfigStore.InfoLinkKey, "https://example.com/why");
+        source.SetChannelFilter(Guild, 10, ConfigStore.ExcludeKind);
+        source.AddPingOptOut(Guild, 7);
+        source.AddExemptRole(Guild, 5);
+
+        var json = ConfigTransfer.Export(source.Get(Guild));
+        Assert.True(ConfigTransfer.TryParse(json, out var bundle, out var error), error);
+
+        var target = NewStore();
+        target.ImportBundle(Guild + 1, bundle, replace: true);
+        var imported = target.Get(Guild + 1);
+
+        Assert.Equal(source.Get(Guild).Sites.Select(s => s.Name).Order(), imported.Sites.Select(s => s.Name).Order());
+        Assert.Contains("extra", imported.Sites.Single(s => s.Name == "google").StripParams);
+        Assert.Equal(["utm_*", "fbclid"], imported.GlobalRule.StripParams);
+        Assert.False(imported.PingAuthor);
+        Assert.Equal("https://example.com/why", imported.InfoLink);
+        // Server-specific things never travel.
+        Assert.Empty(imported.ExcludedChannels);
+        Assert.Empty(imported.PingOptOuts);
+        Assert.Empty(imported.ExemptRoles);
+        Assert.Null(imported.ModLogChannelId);
+    }
+
+    [Fact]
+    public void Merge_keeps_other_sites_and_replace_drops_them()
+    {
+        var store = NewStore();
+        store.SaveSite(Guild, new SiteRule { Name = "mine", Hosts = ["mine.example"] });
+        var bundle = new ConfigBundle(ConfigTransfer.FormatVersion,
+            [new SiteRule { Name = "theirs", Hosts = ["theirs.example"], StripParams = ["a"] }],
+            GlobalRule.Default, ConfigStore.DefaultInfoLink, "🪞", true);
+
+        store.ImportBundle(Guild, bundle, replace: false);
+        var merged = store.Get(Guild).Sites.Select(s => s.Name).ToList();
+        Assert.Contains("mine", merged);
+        Assert.Contains("theirs", merged);
+        Assert.Contains("youtube", merged);
+
+        store.ImportBundle(Guild, bundle, replace: true);
+        Assert.Equal(["theirs"], store.Get(Guild).Sites.Select(s => s.Name));
+
+        // Built-ins left out of a replace stay gone, even after a default revision bump.
+        Raw($"UPDATE settings SET value = '1' WHERE guild_id = {Guild} AND key = '{ConfigStore.DefaultsRevisionKey}'");
+        Assert.Equal(["theirs"], NewStore().Get(Guild).Sites.Select(s => s.Name));
+    }
+
+    private static string Bundle(Func<string, string>? edit = null) =>
+        (edit ?? (s => s))(ConfigTransfer.Export(new ConfigStore(Path.Combine(Path.GetTempPath(), "lc-" + Guid.NewGuid().ToString("N"), "x.db")).Get(1)));
+
+    [Theory]
+    [InlineData("not json")]
+    [InlineData("{}")]
+    [InlineData("""{"Version":1}""")]
+    public void Garbage_is_rejected(string json)
+    {
+        Assert.False(ConfigTransfer.TryParse(json, out _, out var error));
+        Assert.NotEmpty(error);
+    }
+
+    [Fact]
+    public void Validation_rejects_unsafe_or_malformed_files()
+    {
+        Assert.True(ConfigTransfer.TryParse(Bundle(), out _, out _));
+
+        Assert.False(ConfigTransfer.TryParse(Bundle(j => j.Replace("\"Version\": 1", "\"Version\": 2")), out _, out _));
+        Assert.False(ConfigTransfer.TryParse(Bundle(j => j.Replace("\"youtube\"", "\"Bad Name!\"")), out _, out _));
+        Assert.False(ConfigTransfer.TryParse(Bundle(j => j.Replace("\"MirrorHost\": \"fixupx.com\"", "\"MirrorHost\": \"https://evil.example/x\"")), out _, out _));
+        Assert.False(ConfigTransfer.TryParse(Bundle(j => j.Replace("\"InfoLink\": \"https", "\"InfoLink\": \"javascript")), out _, out _));
+        Assert.False(ConfigTransfer.TryParse(new string(' ', ConfigTransfer.MaxBytes + 1), out _, out _));
+    }
+
+    [Fact]
+    public void Validation_rejects_duplicate_names_bad_regexes_and_too_many_sites()
+    {
+        ConfigBundle With(params SiteRule[] sites) => new(ConfigTransfer.FormatVersion, sites, GlobalRule.Default, ConfigStore.DefaultInfoLink, "🪞", true);
+        bool Valid(ConfigBundle b) => ConfigTransfer.TryParse(System.Text.Json.JsonSerializer.Serialize(b), out _, out _);
+        var ok = new SiteRule { Name = "a", Hosts = ["a.example"] };
+
+        Assert.True(Valid(With(ok)));
+        Assert.False(Valid(With(ok, ok)));
+        Assert.False(Valid(With(ok with { StripPathPatterns = ["([unclosed"] })));
+        Assert.False(Valid(With(ok with { MirrorPathPattern = "([unclosed" })));
+        Assert.False(Valid(With(ok with { Hosts = ["not a host"] })));
+        Assert.False(Valid(With(ok with { StripParams = ["bad&name"] })));
+        Assert.False(Valid(With(ok with { DefaultRevision = DefaultSites.Revision + 1 })));
+        Assert.False(Valid(With(Enumerable.Range(0, ConfigTransfer.MaxSites + 1).Select(i => ok with { Name = "s" + i }).ToArray())));
+    }
+
+    [Theory]
+    [InlineData("https://cdn.discordapp.com/attachments/1/2/config.json?ex=1&is=2&hm=3", true)]
+    [InlineData("https://media.discordapp.net/attachments/1/2/config.json", true)]
+    [InlineData("http://cdn.discordapp.com/attachments/1/2/config.json", false)]
+    [InlineData("https://evil.example/cdn.discordapp.com/x.json", false)]
+    [InlineData("https://cdn.discordapp.com.evil.example/x.json", false)]
+    [InlineData("https://169.254.169.254/latest/meta-data", false)]
+    public void Only_discords_attachment_hosts_are_downloaded(string url, bool allowed)
+    {
+        Assert.Equal(allowed, AttachmentDownloader.IsDiscordAttachmentUrl(url));
+    }
+
     [Fact]
     public async Task Slash_commands_build_into_a_valid_definition()
     {
         using var client = new DiscordSocketClient();
         var interactions = new InteractionService(client);
-        var services = new ServiceCollection().AddSingleton(NewStore()).BuildServiceProvider();
+        var services = new ServiceCollection().AddSingleton(NewStore())
+            .AddSingleton(new AttachmentDownloader(new HttpClient())).BuildServiceProvider();
 
         await interactions.AddModulesAsync(typeof(ConfigStore).Assembly, services);
 
@@ -326,6 +438,8 @@ public sealed class BotTests : IDisposable
         Assert.Contains(interactions.SlashCommands, c => c.Module.SlashGroupName == "site" && c.Name == "enable");
         Assert.Contains(interactions.SlashCommands, c => c.Module.SlashGroupName == "linkcleaner" && c.Name == "status");
         Assert.Contains(interactions.SlashCommands, c => c.Module.SlashGroupName == "linkcleaner" && c.Name == "pings");
+        Assert.Contains(interactions.SlashCommands, c => c.Module.SlashGroupName == "linkcleaner" && c.Name == "export");
+        Assert.Contains(interactions.SlashCommands, c => c.Module.SlashGroupName == "linkcleaner" && c.Name == "import");
         Assert.Contains(interactions.SlashCommands, c => c.Module.SlashGroupName == "global" && c.Name == "add");
         Assert.Contains(interactions.SlashCommands, c => c.Module.SlashGroupName == "global" && c.Name == "disable");
         Assert.Contains(interactions.SlashCommands, c => c.Module.SlashGroupName == "path" && c.Name == "add");

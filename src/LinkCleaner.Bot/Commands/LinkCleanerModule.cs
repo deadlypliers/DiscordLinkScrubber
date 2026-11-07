@@ -13,8 +13,54 @@ namespace LinkCleaner.Bot.Commands;
 [Group("linkcleaner", "Configure the link cleaner.")]
 [CommandContextType(InteractionContextType.Guild)]
 [DefaultMemberPermissions(GuildPermission.ManageGuild)]
-public sealed class LinkCleanerModule(ConfigStore store) : InteractionModuleBase<SocketInteractionContext>
+public sealed class LinkCleanerModule(ConfigStore store, AttachmentDownloader downloader) : InteractionModuleBase<SocketInteractionContext>
 {
+    [SlashCommand("export", "Download this server's rules and settings as a file you can import elsewhere.")]
+    public async Task Export()
+    {
+        var json = ConfigTransfer.Export(store.Get(Context.Guild.Id));
+        using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json));
+        await Context.Interaction.RespondWithFileAsync(stream, "linkcleaner-config.json",
+            "Sites, the server-wide rule, info link, mirror prefix and the ping setting. Channel rules, exempt roles, the mod log and members' ping choices stay behind.",
+            ephemeral: true, allowedMentions: AllowedMentions.None);
+    }
+
+    [SlashCommand("import", "Load rules and settings from an exported file (also replaces info link, prefix, ping and server-wide rule).")]
+    public async Task Import(
+        [Summary(description: "The linkcleaner-config.json file")] IAttachment file,
+        [Summary(description: "True to make this server's sites exactly match the file (default: merge by name)")] bool replace = false,
+        [Summary(description: "Required with replace: confirms you want to discard sites not in the file")] bool confirm = false)
+    {
+        if (replace && !confirm)
+        {
+            await this.Say("`replace` removes every site that isn't in the file. Run it again with `confirm:true` if that's what you want, or leave `replace` off to merge.");
+            return;
+        }
+
+        await DeferAsync(ephemeral: true);
+        string text;
+        try
+        {
+            text = await downloader.DownloadTextAsync(file.Url, ConfigTransfer.MaxBytes);
+        }
+        catch (InvalidOperationException ex)
+        {
+            await FollowupAsync(ex.Message, ephemeral: true, allowedMentions: AllowedMentions.None);
+            return;
+        }
+
+        if (!ConfigTransfer.TryParse(text, out var bundle, out var error))
+        {
+            await FollowupAsync($"Nothing was changed. {error}", ephemeral: true, allowedMentions: AllowedMentions.None);
+            return;
+        }
+
+        store.ImportBundle(Context.Guild.Id, bundle, replace);
+        await FollowupAsync(
+            $"Imported {bundle.Sites.Count} site(s) ({(replace ? "replacing your list" : "merged by name")}) and the file's settings. Use `/linkcleaner status` to review.",
+            ephemeral: true, allowedMentions: AllowedMentions.None);
+    }
+
     [SlashCommand("status", "Show the current configuration.")]
     public async Task Status()
     {

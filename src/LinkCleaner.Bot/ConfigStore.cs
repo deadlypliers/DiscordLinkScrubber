@@ -85,6 +85,43 @@ public sealed class ConfigStore
             Exec(c, "INSERT OR IGNORE INTO deleted_defaults (guild_id, name) VALUES ($g, $n)", ("$g", (long)guildId), ("$n", name));
     });
 
+    /// <summary>
+    /// Applies a validated import in one transaction. Sites are merged by name (the file wins), or with
+    /// <paramref name="replace"/> the server's sites become exactly the file's. Server-wide settings always come from the file.
+    /// </summary>
+    public void ImportBundle(ulong guildId, ConfigBundle bundle, bool replace) => Mutate(guildId, c =>
+    {
+        var g = (long)guildId;
+        using var tx = c.BeginTransaction();
+
+        if (replace)
+        {
+            Exec(c, "DELETE FROM sites WHERE guild_id = $g", ("$g", g));
+            Exec(c, "DELETE FROM deleted_defaults WHERE guild_id = $g", ("$g", g));
+        }
+
+        foreach (var site in bundle.Sites)
+        {
+            Exec(c, "INSERT OR REPLACE INTO sites (guild_id, name, json) VALUES ($g, $n, $j)",
+                ("$g", g), ("$n", site.Name), ("$j", JsonSerializer.Serialize(site)));
+            Exec(c, "DELETE FROM deleted_defaults WHERE guild_id = $g AND name = $n", ("$g", g), ("$n", site.Name));
+        }
+
+        if (replace)
+            foreach (var def in DefaultSites.Create().Where(d => bundle.Sites.All(s => s.Name != d.Name)))
+                Exec(c, "INSERT OR IGNORE INTO deleted_defaults (guild_id, name) VALUES ($g, $n)", ("$g", g), ("$n", def.Name));
+
+        void Put(string key, string value) => Exec(c, "INSERT OR REPLACE INTO settings (guild_id, key, value) VALUES ($g, $k, $v)",
+            ("$g", g), ("$k", key), ("$v", value));
+        Put(InfoLinkKey, bundle.InfoLink);
+        Put(MirrorPrefixKey, bundle.MirrorPrefix);
+        Put(PingAuthorKey, bundle.PingAuthor ? "1" : "0");
+        Put(GlobalEnabledKey, bundle.Global.Enabled ? "1" : "0");
+        Put(GlobalParamsKey, JsonSerializer.Serialize(bundle.Global.StripParams));
+
+        tx.Commit();
+    });
+
     // ---- Settings ----------------------------------------------------------------------
 
     /// <summary>Sets a setting; null removes it so the default applies again.</summary>

@@ -42,6 +42,9 @@ builder.Services.AddSingleton(new DiscordSocketClient(new DiscordSocketConfig
 builder.Services.AddSingleton(sp => new InteractionService(
     sp.GetRequiredService<DiscordSocketClient>(),
     new InteractionServiceConfig { DefaultRunMode = RunMode.Async, LogLevel = LogSeverity.Info }));
+builder.Services.AddSingleton(new AttachmentDownloader(
+    // No redirects: a Discord attachment URL must never send the bot somewhere else.
+    new HttpClient(new HttpClientHandler { AllowAutoRedirect = false })));
 builder.Services.AddSingleton<MessageHandler>();
 builder.Services.AddHostedService<BotService>();
 

@@ -128,9 +128,17 @@ public static partial class LinkProcessor
         if (string.IsNullOrWhiteSpace(site.MirrorHost))
             return null;
 
-        var applies = site.MirrorPathPattern is null
-            ? path.Length > 1
-            : Regex.IsMatch(path, site.MirrorPathPattern, RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(100));
+        bool applies;
+        try
+        {
+            applies = site.MirrorPathPattern is null
+                ? path.Length > 1
+                : Regex.IsMatch(path, site.MirrorPathPattern, RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(100));
+        }
+        catch (Exception ex) when (ex is ArgumentException or RegexMatchTimeoutException)
+        {
+            applies = false; // a bad or runaway pattern (e.g. imported) must not break the message
+        }
         if (!applies)
             return null;
 
