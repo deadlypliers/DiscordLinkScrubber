@@ -127,21 +127,30 @@ public sealed class BotService(
         };
         log.Log(level, message.Exception, "[{Source}] {Message}", message.Source, message.Message);
 
-        // Discord.Net retries forever after a rejected token, which looks healthy but is dead. Fail fast instead.
-        if (IsAuthFailure(message.Exception) && !lifetime.ApplicationStopping.IsCancellationRequested)
+        // Discord.Net retries forever after errors that can only be fixed by a human, which looks healthy
+        // but is dead. Say what is wrong and exit instead.
+        if (FatalReason(message.Exception) is { } reason && !lifetime.ApplicationStopping.IsCancellationRequested)
         {
-            log.LogCritical("Discord rejected the bot token. Check DISCORD_TOKEN. Shutting down.");
+            log.LogCritical("{Reason} Shutting down.", reason);
             Environment.ExitCode = 1;
             lifetime.StopApplication();
         }
         return Task.CompletedTask;
     }
 
-    private static bool IsAuthFailure(Exception? ex) => ex switch
+    /// <summary>A human-readable cause if the error can't fix itself by reconnecting, otherwise null.</summary>
+    private static string? FatalReason(Exception? ex) => ex switch
     {
-        null => false,
-        HttpException { HttpCode: System.Net.HttpStatusCode.Unauthorized } => true,
-        ArgumentException { ParamName: "token" } => true,
-        _ => IsAuthFailure(ex.InnerException),
+        null => null,
+        HttpException { HttpCode: System.Net.HttpStatusCode.Unauthorized } => TokenRejected,
+        ArgumentException { ParamName: "token" } => TokenRejected,
+        WebSocketClosedException { CloseCode: 4004 } => TokenRejected,
+        WebSocketClosedException { CloseCode: 4014 } =>
+            "Discord refused the connection (4014: disallowed intent). Enable \"Message Content Intent\" under " +
+            "Bot > Privileged Gateway Intents in the Discord developer portal.",
+        WebSocketClosedException { CloseCode: 4013 } => "Discord refused the connection (4013: invalid intents).",
+        _ => FatalReason(ex.InnerException),
     };
+
+    private const string TokenRejected = "Discord rejected the bot token. Check DISCORD_TOKEN.";
 }
