@@ -18,6 +18,12 @@ public sealed record GuildConfig(
     /// <summary>The server-wide strip list; the built-in default (utm_*) unless an admin changed it.</summary>
     public GlobalRule GlobalRule => Global ?? GlobalRule.Default;
 
+    /// <summary>Built-in sites the admin edited that are behind the current default revision (so they missed an update).</summary>
+    public IReadOnlyList<string> OutdatedBuiltIns =>
+        Sites.Where(s => s.Customised && s.DefaultRevision < DefaultSites.Revision &&
+                         DefaultSites.Create().Any(d => d.Name == s.Name))
+            .Select(s => s.Name).ToList();
+
     /// <summary>
     /// Excluded channels never apply. If any channels are explicitly included, only those do;
     /// otherwise every channel does. A thread follows its parent channel's rules.

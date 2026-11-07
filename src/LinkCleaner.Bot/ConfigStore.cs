@@ -54,6 +54,9 @@ public sealed class ConfigStore
                 CREATE TABLE IF NOT EXISTS exempt_roles (
                     guild_id INTEGER NOT NULL, role_id INTEGER NOT NULL,
                     PRIMARY KEY (guild_id, role_id));
+                CREATE TABLE IF NOT EXISTS deleted_defaults (
+                    guild_id INTEGER NOT NULL, name TEXT NOT NULL,
+                    PRIMARY KEY (guild_id, name));
                 CREATE TABLE IF NOT EXISTS ping_optouts (
                     guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
                     PRIMARY KEY (guild_id, user_id));
@@ -65,12 +68,22 @@ public sealed class ConfigStore
 
     // ---- Sites -------------------------------------------------------------------------
 
-    public void SaveSite(ulong guildId, SiteRule rule) => Mutate(guildId, c =>
+    /// <param name="customises">True for admin edits (built-in updates then leave the site alone). Enable/disable and reset pass false.</param>
+    public void SaveSite(ulong guildId, SiteRule rule, bool customises = true) => Mutate(guildId, c =>
+    {
+        var stored = customises ? rule with { Customised = true } : rule;
         Exec(c, "INSERT OR REPLACE INTO sites (guild_id, name, json) VALUES ($g, $n, $j)",
-            ("$g", (long)guildId), ("$n", rule.Name), ("$j", JsonSerializer.Serialize(rule))));
+            ("$g", (long)guildId), ("$n", rule.Name), ("$j", JsonSerializer.Serialize(stored)));
+        Exec(c, "DELETE FROM deleted_defaults WHERE guild_id = $g AND name = $n", ("$g", (long)guildId), ("$n", rule.Name));
+    });
 
     public void DeleteSite(ulong guildId, string name) => Mutate(guildId, c =>
-        Exec(c, "DELETE FROM sites WHERE guild_id = $g AND name = $n", ("$g", (long)guildId), ("$n", name)));
+    {
+        Exec(c, "DELETE FROM sites WHERE guild_id = $g AND name = $n", ("$g", (long)guildId), ("$n", name));
+        // Remember deleted built-ins so a later default update doesn't bring them back.
+        if (DefaultSites.Create().Any(s => s.Name == name))
+            Exec(c, "INSERT OR IGNORE INTO deleted_defaults (guild_id, name) VALUES ($g, $n)", ("$g", (long)guildId), ("$n", name));
+    });
 
     // ---- Settings ----------------------------------------------------------------------
 
@@ -133,19 +146,81 @@ public sealed class ConfigStore
         }
     }
 
-    /// <summary>Copies the default sites into a guild the first time it is seen (never again, so deletions stick).</summary>
+    public const string DefaultsRevisionKey = "defaults_revision";
+
+    /// <summary>
+    /// Copies the default sites into a guild the first time it is seen, and rolls later default
+    /// revisions out to it (once per revision). Deleted built-ins stay deleted; edited sites are untouched.
+    /// </summary>
     private static void EnsureSeeded(SqliteConnection c, ulong guildId)
     {
-        var seeded = Scalar(c, "SELECT 1 FROM settings WHERE guild_id = $g AND key = 'seeded'", ("$g", (long)guildId));
-        if (seeded is not null)
+        var g = (long)guildId;
+        var seeded = Scalar(c, "SELECT 1 FROM settings WHERE guild_id = $g AND key = 'seeded'", ("$g", g)) is not null;
+        var revision = Scalar(c, "SELECT value FROM settings WHERE guild_id = $g AND key = $k", ("$g", g), ("$k", DefaultsRevisionKey))
+            is string text && int.TryParse(text, out var parsed) ? parsed : 0;
+        if (seeded && revision >= DefaultSites.Revision)
             return;
 
         using var tx = c.BeginTransaction();
-        foreach (var rule in DefaultSites.Create())
-            Exec(c, "INSERT OR IGNORE INTO sites (guild_id, name, json) VALUES ($g, $n, $j)",
-                ("$g", (long)guildId), ("$n", rule.Name), ("$j", JsonSerializer.Serialize(rule)));
-        Exec(c, "INSERT OR REPLACE INTO settings (guild_id, key, value) VALUES ($g, 'seeded', '1')", ("$g", (long)guildId));
+        if (!seeded)
+            foreach (var rule in DefaultSites.Create())
+                Exec(c, "INSERT OR IGNORE INTO sites (guild_id, name, json) VALUES ($g, $n, $j)",
+                    ("$g", g), ("$n", rule.Name), ("$j", JsonSerializer.Serialize(rule)));
+        else
+            ApplyDefaultUpdates(c, g, legacy: revision == 0);
+
+        Exec(c, "INSERT OR REPLACE INTO settings (guild_id, key, value) VALUES ($g, 'seeded', '1')", ("$g", g));
+        Exec(c, "INSERT OR REPLACE INTO settings (guild_id, key, value) VALUES ($g, $k, $v)",
+            ("$g", g), ("$k", DefaultsRevisionKey), ("$v", DefaultSites.Revision.ToString()));
         tx.Commit();
+    }
+
+    /// <param name="legacy">The guild was seeded before revisions existed, so a missing original built-in was deleted by an admin.</param>
+    private static void ApplyDefaultUpdates(SqliteConnection c, long g, bool legacy)
+    {
+        var stored = Query(c, "SELECT json FROM sites WHERE guild_id = $g", r => r.GetString(0), ("$g", g))
+            .Select(j => JsonSerializer.Deserialize<SiteRule>(j)!)
+            .ToDictionary(s => s.Name);
+        var deleted = Query(c, "SELECT name FROM deleted_defaults WHERE guild_id = $g", r => r.GetString(0), ("$g", g)).ToHashSet();
+
+        void Save(SiteRule rule) => Exec(c, "INSERT OR REPLACE INTO sites (guild_id, name, json) VALUES ($g, $n, $j)",
+            ("$g", g), ("$n", rule.Name), ("$j", JsonSerializer.Serialize(rule)));
+
+        foreach (var def in DefaultSites.Create())
+        {
+            if (!stored.TryGetValue(def.Name, out var current))
+            {
+                if (legacy && DefaultSites.OriginalNames.Contains(def.Name))
+                    Exec(c, "INSERT OR IGNORE INTO deleted_defaults (guild_id, name) VALUES ($g, $n)", ("$g", g), ("$n", def.Name));
+                else if (!deleted.Contains(def.Name))
+                    Save(def);
+                continue;
+            }
+
+            if (current.Customised)
+                continue;
+
+            // A row stored before revisions existed counts as unedited only if it is a known earlier default.
+            if (current.DefaultRevision == 0 && !MatchesEarlierDefault(current, def))
+            {
+                Save(current with { Customised = true });
+                continue;
+            }
+
+            Save(def with { Enabled = current.Enabled });
+        }
+    }
+
+    /// <summary>Revision 1 equals today's definition of the original sites, except YouTube then lacked "is".</summary>
+    private static bool MatchesEarlierDefault(SiteRule stored, SiteRule current)
+    {
+        static bool Same(SiteRule a, SiteRule b) =>
+            a.Hosts.SequenceEqual(b.Hosts) && a.StripParams.SequenceEqual(b.StripParams) &&
+            a.StripPathPatterns.SequenceEqual(b.StripPathPatterns) &&
+            a.MirrorHost == b.MirrorHost && a.MirrorPathPattern == b.MirrorPathPattern;
+
+        return Same(stored, current) ||
+               Same(stored, current with { StripParams = current.StripParams.Where(p => p != "is").ToList() });
     }
 
     private GuildConfig Load(ulong guildId)

@@ -26,6 +26,10 @@ public sealed class LinkCleanerModule(ConfigStore store) : InteractionModuleBase
             var mirror = string.IsNullOrWhiteSpace(s.MirrorHost) ? "" : $" → mirror `{s.MirrorHost}`";
             sb.AppendLine($"- {(s.Enabled ? "✅" : "⛔")} `{s.Name}`: {s.StripParams.Count} params{mirror}");
         }
+        var outdated = cfg.OutdatedBuiltIns;
+        if (outdated.Count > 0)
+            sb.AppendLine($"\n⚠️ Newer built-in rules exist for {string.Join(", ", outdated.Select(n => $"`{n}`"))}, but you've edited " +
+                          (outdated.Count == 1 ? "that site" : "those sites") + ". `/linkcleaner site reset` loads the new rules (your edits are lost).");
         sb.AppendLine();
         sb.AppendLine($"**Every link, any site:** {CommandHelpers.DescribeGlobal(cfg.GlobalRule)}");
         sb.AppendLine($"**Info link:** <{cfg.InfoLink}>");
@@ -168,8 +172,8 @@ public sealed class LinkCleanerModule(ConfigStore store) : InteractionModuleBase
                 await this.Say($"`{site}` isn't a built-in site, so there are no defaults to restore.");
                 return;
             }
-            store.SaveSite(Context.Guild.Id, original);
-            await this.Say($"Restored `{site}` to its defaults.");
+            store.SaveSite(Context.Guild.Id, original, customises: false);
+            await this.Say($"Restored `{site}` to its defaults. It will now receive future built-in updates.");
         }
 
         private async Task SetEnabled(string site, bool enabled)
@@ -180,7 +184,7 @@ public sealed class LinkCleanerModule(ConfigStore store) : InteractionModuleBase
                 await this.Say(NotFound(site));
                 return;
             }
-            store.SaveSite(Context.Guild.Id, rule with { Enabled = enabled });
+            store.SaveSite(Context.Guild.Id, rule with { Enabled = enabled }, customises: false);
             await this.Say($"`{site}` is now {(enabled ? "enabled" : "disabled")}.");
         }
 

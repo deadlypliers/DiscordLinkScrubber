@@ -3,7 +3,17 @@ namespace LinkCleaner.Core;
 /// <summary>Out-of-the-box rules. Servers can edit all of this at runtime.</summary>
 public static class DefaultSites
 {
+    /// <summary>Bump on every change to the list below; servers with unedited sites pick the change up automatically.</summary>
+    public const int Revision = 2;
+
+    /// <summary>The sites that shipped in revision 1, used to tell deleted defaults from newly added ones on old servers.</summary>
+    public static readonly IReadOnlySet<string> OriginalNames = new HashSet<string>
+        { "youtube", "instagram", "x", "facebook", "reddit", "tiktok", "spotify", "twitch" };
+
     public static IReadOnlyList<SiteRule> Create() =>
+        [.. Build().Select(s => s with { DefaultRevision = Revision })];
+
+    private static IReadOnlyList<SiteRule> Build() =>
     [
         new SiteRule
         {

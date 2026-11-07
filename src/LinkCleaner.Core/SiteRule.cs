@@ -6,6 +6,15 @@ namespace LinkCleaner.Core;
 /// </summary>
 public sealed record SiteRule
 {
+    /// <summary>
+    /// Which <see cref="DefaultSites.Revision"/> this rule was copied from (0 = not from a built-in, or stored
+    /// before revisions existed). Used to roll out new defaults to servers that haven't changed the site.
+    /// </summary>
+    public int DefaultRevision { get; init; }
+
+    /// <summary>True once an admin edited this site, so built-in updates no longer overwrite it.</summary>
+    public bool Customised { get; init; }
+
     /// <summary>Unique, human-friendly key, e.g. "youtube".</summary>
     public required string Name { get; init; }
 

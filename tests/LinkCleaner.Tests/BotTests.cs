@@ -210,6 +210,108 @@ public sealed class BotTests : IDisposable
         Assert.Empty(legacy.StripPathPatterns);
     }
 
+    // ---- Default revisions --------------------------------------------------------------
+
+    private void Raw(string sql)
+    {
+        using var c = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={Path.Combine(_dir, "test.db")}");
+        c.Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.ExecuteNonQuery();
+    }
+
+    private void SaveLegacy(string name, SiteRule rule) => Raw(
+        $"UPDATE sites SET json = '{System.Text.Json.JsonSerializer.Serialize(rule with { DefaultRevision = 0, Customised = false }).Replace("'", "''")}' " +
+        $"WHERE guild_id = {Guild} AND name = '{name}'");
+
+    /// <summary>Rewinds a guild to how revision 1 stored it: only the original sites, no revision markers.</summary>
+    private ConfigStore MakeLegacyGuild(Action<ConfigStore>? tweak = null)
+    {
+        var store = NewStore();
+        _ = store.Get(Guild);
+        Raw($"DELETE FROM sites WHERE guild_id = {Guild} AND name NOT IN ('youtube','instagram','x','facebook','reddit','tiktok','spotify','twitch')");
+        foreach (var original in DefaultSites.Create().Where(s => DefaultSites.OriginalNames.Contains(s.Name)))
+            SaveLegacy(original.Name, original);
+        SaveLegacy("youtube", DefaultSites.Create().Single(s => s.Name == "youtube") with
+            { StripParams = ["si", "feature", "pp", "utm_*", "fbclid", "gclid"] }); // revision 1 had no "is"
+        Raw($"DELETE FROM settings WHERE guild_id = {Guild} AND key = '{ConfigStore.DefaultsRevisionKey}'");
+        tweak?.Invoke(store);
+        return NewStore();
+    }
+
+    [Fact]
+    public void Legacy_guild_gets_new_sites_and_unedited_sites_are_refreshed()
+    {
+        var cfg = MakeLegacyGuild().Get(Guild);
+
+        Assert.All(DefaultSites.Create(), d => Assert.Contains(cfg.Sites, s => s.Name == d.Name));
+        Assert.Contains("is", cfg.Sites.Single(s => s.Name == "youtube").StripParams);
+        Assert.Empty(cfg.OutdatedBuiltIns);
+    }
+
+    [Fact]
+    public void Legacy_guild_keeps_deleted_originals_deleted_and_edited_sites_untouched()
+    {
+        var edited = DefaultSites.Create().Single(s => s.Name == "x") with { StripParams = ["only_this"] };
+        var cfg = MakeLegacyGuild(_ =>
+        {
+            Raw($"DELETE FROM sites WHERE guild_id = {Guild} AND name = 'twitch'"); // deleted before revisions existed
+            SaveLegacy("x", edited);
+        }).Get(Guild);
+
+        Assert.DoesNotContain(cfg.Sites, s => s.Name == "twitch");
+        var x = cfg.Sites.Single(s => s.Name == "x");
+        Assert.Equal(["only_this"], x.StripParams);
+        Assert.True(x.Customised);
+        Assert.Equal(["x"], cfg.OutdatedBuiltIns);
+    }
+
+    [Fact]
+    public void Refreshing_a_site_keeps_its_enabled_flag()
+    {
+        var cfg = MakeLegacyGuild(_ =>
+            SaveLegacy("youtube", DefaultSites.Create().Single(s => s.Name == "youtube") with
+                { Enabled = false, StripParams = ["si", "feature", "pp", "utm_*", "fbclid", "gclid"] })).Get(Guild);
+
+        var youtube = cfg.Sites.Single(s => s.Name == "youtube");
+        Assert.False(youtube.Enabled);
+        Assert.Contains("is", youtube.StripParams);
+    }
+
+    [Fact]
+    public void A_deleted_builtin_is_not_restored_by_a_later_revision()
+    {
+        var store = NewStore();
+        store.DeleteSite(Guild, "amazon");
+        Raw($"UPDATE settings SET value = '1' WHERE guild_id = {Guild} AND key = '{ConfigStore.DefaultsRevisionKey}'");
+
+        Assert.DoesNotContain(NewStore().Get(Guild).Sites, s => s.Name == "amazon");
+
+        // ...but an admin adding a site of that name again is honoured.
+        store.SaveSite(Guild, new SiteRule { Name = "amazon", Hosts = ["amazon.example"] });
+        Assert.Contains(NewStore().Get(Guild).Sites, s => s.Name == "amazon");
+    }
+
+    [Fact]
+    public void Edits_mark_a_site_customised_but_toggling_and_resetting_do_not()
+    {
+        var store = NewStore();
+        var google = store.Get(Guild).Sites.Single(s => s.Name == "google");
+        Assert.False(google.Customised);
+
+        store.SaveSite(Guild, google with { Enabled = false }, customises: false);
+        Assert.False(store.Get(Guild).Sites.Single(s => s.Name == "google").Customised);
+
+        store.SaveSite(Guild, google with { StripParams = [.. google.StripParams, "extra"] });
+        Assert.True(store.Get(Guild).Sites.Single(s => s.Name == "google").Customised);
+
+        store.SaveSite(Guild, DefaultSites.Create().Single(s => s.Name == "google"), customises: false);
+        var reset = store.Get(Guild).Sites.Single(s => s.Name == "google");
+        Assert.False(reset.Customised);
+        Assert.Equal(DefaultSites.Revision, reset.DefaultRevision);
+    }
+
     [Fact]
     public async Task Slash_commands_build_into_a_valid_definition()
     {
