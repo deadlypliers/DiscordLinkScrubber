@@ -60,11 +60,29 @@ public sealed class MessageHandler(
         var config = store.Get(guild.Id);
 
         var thread = msg.Channel as SocketThreadChannel;
-        if (!config.AppliesTo(channel.Id, thread?.ParentChannel?.Id)) return;
-        if (msg.Author is SocketGuildUser member && member.Roles.Any(r => config.ExemptRoles.Contains(r.Id))) return;
+        if (!config.AppliesTo(channel.Id, thread?.ParentChannel?.Id))
+        {
+            log.LogDebug("Message {MessageId}: skipped, channel #{Channel} is excluded by channel rules", msg.Id, channel.Name);
+            return;
+        }
+        if (msg.Author is SocketGuildUser member && member.Roles.Any(r => config.ExemptRoles.Contains(r.Id)))
+        {
+            log.LogDebug("Message {MessageId}: skipped, author has an exempt role", msg.Id);
+            return;
+        }
 
         var processed = LinkProcessor.Process(msg.Content, config.Sites);
-        if (!processed.HasWork) return;
+        if (!processed.HasWork)
+        {
+            if (processed.Links.Count > 0)
+                log.LogInformation("Message {MessageId} in #{Channel}: {Count} link(s) on tracked sites ({Sites}) but nothing to strip or mirror",
+                    msg.Id, channel.Name, processed.Links.Count, string.Join(", ", processed.Links.Select(l => l.Site).Distinct()));
+            else if (string.IsNullOrEmpty(msg.Content) && msg.Attachments.Count == 0 && msg.Embeds.Count == 0)
+                log.LogDebug("Message {MessageId}: empty content (is the Message Content Intent enabled?)", msg.Id);
+            else
+                log.LogDebug("Message {MessageId}: no links on tracked sites", msg.Id);
+            return;
+        }
 
         var perms = guild.CurrentUser.GetPermissions(channel);
         var canSend = thread is not null ? perms.SendMessagesInThreads : perms.SendMessages;
@@ -144,6 +162,10 @@ public sealed class MessageHandler(
             }
         }
 
+        log.LogInformation("Message {MessageId} in #{Channel}: removed tracking from {Count} link(s) ({Mode})",
+            msg.Id, msg.Channel.Name, processed.Links.Count(l => l.TrackingRemoved),
+            canReplaceOriginal ? "reposted and deleted original" : "replied, original kept");
+
         var lines = processed.Links.Where(l => l.TrackingRemoved).Select(l => $"<{l.Original}> → <{l.Replacement}>");
         await ModLogAsync(config, msg, "🧹 Removed tracking", lines);
         return sent;
@@ -178,6 +200,8 @@ public sealed class MessageHandler(
             log.LogError(ex, "Failed to send mirror reply for message {MessageId}", msg.Id);
             return;
         }
+
+        log.LogInformation("Message {MessageId} in #{Channel}: posted {Count} mirror link(s)", msg.Id, msg.Channel.Name, fresh.Count);
 
         var lines = processed.Links
             .Where(l => !l.TrackingRemoved && l.Mirror is not null)
