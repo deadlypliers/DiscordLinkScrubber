@@ -81,6 +81,7 @@ public sealed class LinkCleanerModule(ConfigStore store, AttachmentDownloader do
         sb.AppendLine($"**Info link:** <{cfg.InfoLink}>");
         sb.AppendLine($"**Mirror prefix:** {(cfg.MirrorPrefix.Length > 0 ? cfg.MirrorPrefix : "_none_")}");
         sb.AppendLine($"**Mod log:** {(cfg.ModLogChannelId is { } id ? $"<#{id}>" : "_off_")}");
+        sb.AppendLine($"**Enforcement:** {(cfg.Enforcement == Enforcement.IncludeCosmetic ? "tracking and cosmetic params" : "tracking only (cosmetic params are tidied alongside)")}");
         sb.AppendLine($"**Ping poster:** {(cfg.PingAuthor ? "on" : "off")} ({cfg.PingOptOuts.Count} opted out)");
         sb.AppendLine($"**Only in channels:** {(cfg.IncludedChannels.Count > 0 ? string.Join(", ", cfg.IncludedChannels.Select(c => $"<#{c}>")) : "_all_")}");
         sb.AppendLine($"**Ignored channels:** {(cfg.ExcludedChannels.Count > 0 ? string.Join(", ", cfg.ExcludedChannels.Select(c => $"<#{c}>")) : "_none_")}");
@@ -137,6 +138,15 @@ public sealed class LinkCleanerModule(ConfigStore store, AttachmentDownloader do
     {
         store.SetSetting(Context.Guild.Id, ConfigStore.ModLogKey, channel?.Id.ToString());
         await this.Say(channel is null ? "Mod log turned off." : $"Actions will be logged to {channel.Mention}.");
+    }
+
+    [SlashCommand("enforcement", "Choose whether harmless extras (like ?feature=shared) are cleaned on their own.")]
+    public async Task Enforce([Summary(description: "True to also clean cosmetic params on their own, false for tracking IDs only")] bool cosmetic)
+    {
+        store.SetSetting(Context.Guild.Id, ConfigStore.EnforcementKey, cosmetic ? "cosmetic" : null);
+        await this.Say(cosmetic
+            ? "Links with only cosmetic extras (e.g. `?feature=shared`) will now be cleaned and reposted too."
+            : "Only links with tracking IDs are acted on. Cosmetic extras are removed only when a tracking ID is present.");
     }
 
     [SlashCommand("pings", "Choose whether the original poster is pinged when their link is reposted.")]
@@ -246,16 +256,26 @@ public sealed class LinkCleanerModule(ConfigStore store, AttachmentDownloader do
         [SlashCommand("add", "Strip a parameter from this site's links.")]
         public async Task Add(
             [Autocomplete(typeof(SiteAutocomplete))] string site,
-            [Summary(description: "Parameter name; end with * for a prefix, e.g. utm_*")] string name)
+            [Summary(description: "Parameter name; end with * for a prefix, e.g. utm_*")] string name,
+            [Summary(description: "Cosmetic: only removed from links that also carry a stripped param")] bool tidy = false)
         {
             name = name.Trim();
             var rule = store.Get(Context.Guild.Id).Sites.FirstOrDefault(s => s.Name == site);
             if (rule is null) { await this.Say($"No site named `{site}`."); return; }
             if (!CommandHelpers.IsValidParamName(name)) { await this.Say("That isn't a valid parameter name."); return; }
-            if (rule.StripParams.Contains(name, StringComparer.OrdinalIgnoreCase)) { await this.Say($"`{name}` is already stripped on `{site}`."); return; }
+            if (rule.StripParams.Concat(rule.TidyParams).Contains(name, StringComparer.OrdinalIgnoreCase))
+            { await this.Say($"`{name}` is already on `{site}`'s list."); return; }
 
-            store.SaveSite(Context.Guild.Id, rule with { StripParams = [.. rule.StripParams, name] });
-            await this.Say($"`{site}` links will now have `{name}` removed.");
+            if (tidy)
+            {
+                store.SaveSite(Context.Guild.Id, rule with { TidyParams = [.. rule.TidyParams, name] });
+                await this.Say($"`{name}` will be removed from `{site}` links, but only when they also carry a stripped param.");
+            }
+            else
+            {
+                store.SaveSite(Context.Guild.Id, rule with { StripParams = [.. rule.StripParams, name] });
+                await this.Say($"`{site}` links will now have `{name}` removed.");
+            }
         }
 
         [SlashCommand("remove", "Stop stripping a parameter from this site's links.")]
@@ -268,16 +288,18 @@ public sealed class LinkCleanerModule(ConfigStore store, AttachmentDownloader do
             if (rule is null) { await this.Say($"No site named `{site}`."); return; }
 
             var remaining = rule.StripParams.Where(p => !p.Equals(name, StringComparison.OrdinalIgnoreCase)).ToList();
-            if (remaining.Count == rule.StripParams.Count) { await this.Say($"`{name}` isn't in `{site}`'s list."); return; }
+            var remainingTidy = rule.TidyParams.Where(p => !p.Equals(name, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (remaining.Count == rule.StripParams.Count && remainingTidy.Count == rule.TidyParams.Count)
+            { await this.Say($"`{name}` isn't in `{site}`'s list."); return; }
 
-            store.SaveSite(Context.Guild.Id, rule with { StripParams = remaining });
+            store.SaveSite(Context.Guild.Id, rule with { StripParams = remaining, TidyParams = remainingTidy });
             await this.Say($"`{site}` links will keep `{name}` from now on.");
         }
     }
 
     // ---- /linkcleaner global … ----------------------------------------------------------
 
-    [Group("global", "Parameters removed from links on ANY site, listed or not (default: utm_*).")]
+    [Group("global", "Parameters removed from links on ANY site, listed or not (click IDs, tracking utm_*).")]
     public sealed class GlobalGroup(ConfigStore store) : InteractionModuleBase<SocketInteractionContext>
     {
         [SlashCommand("list", "Show the server-wide strip list.")]
@@ -307,6 +329,30 @@ public sealed class LinkCleanerModule(ConfigStore store, AttachmentDownloader do
             await this.Say($"`{name}` is no longer removed from every link. Site rules still apply.");
         }
 
+        [SlashCommand("generic-add", "Treat a utm_* value as generic (harmless), e.g. copy-link.")]
+        public async Task GenericAdd([Summary(description: "The value, e.g. copy-link")] string value)
+        {
+            value = value.Trim();
+            var global = store.Get(Context.Guild.Id).GlobalRule;
+            if (!CommandHelpers.IsValidGenericValue(value)) { await this.Say("That isn't a valid value (no spaces, 64 characters max)."); return; }
+            if (global.EffectiveGenericValues.Contains(value, StringComparer.OrdinalIgnoreCase)) { await this.Say($"`{value}` is already generic."); return; }
+
+            store.SetGenericValues(Context.Guild.Id, [.. global.EffectiveGenericValues, value]);
+            await this.Say($"`utm_*` params with the value `{value}` will now be left alone.");
+        }
+
+        [SlashCommand("generic-remove", "Stop treating a utm_* value as generic.")]
+        public async Task GenericRemove([Summary(description: "The value exactly as listed")] string value)
+        {
+            value = value.Trim();
+            var global = store.Get(Context.Guild.Id).GlobalRule;
+            var remaining = global.EffectiveGenericValues.Where(v => !v.Equals(value, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (remaining.Count == global.EffectiveGenericValues.Count) { await this.Say($"`{value}` isn't on the list."); return; }
+
+            store.SetGenericValues(Context.Guild.Id, remaining);
+            await this.Say($"`utm_*` params with the value `{value}` now count as tracking.");
+        }
+
         [SlashCommand("enable", "Turn the server-wide rule on.")]
         public async Task Enable()
         {
@@ -321,12 +367,13 @@ public sealed class LinkCleanerModule(ConfigStore store, AttachmentDownloader do
             await this.Say("The server-wide rule is off. Only the per-site rules apply now.");
         }
 
-        [SlashCommand("reset", "Back to the default: on, stripping utm_*.")]
+        [SlashCommand("reset", "Back to the default: on, click IDs and tracking utm_* removed.")]
         public async Task Reset()
         {
             store.SetSetting(Context.Guild.Id, ConfigStore.GlobalEnabledKey, null);
             store.SetGlobalParams(Context.Guild.Id, null);
-            await this.Say("Restored the default: on, stripping `utm_*`.");
+            store.SetGenericValues(Context.Guild.Id, null);
+            await this.Say("Restored the default: on, removing click IDs and `utm_*` values that aren't generic labels.");
         }
     }
 

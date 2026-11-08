@@ -14,7 +14,8 @@ message and the audit table below.
 Share buttons on YouTube, Instagram, X, Facebook, TikTok, Amazon, Google and others add a hidden ID to links (like `?si=abc123` or `?igsh=…`). That ID can tie a link to the person who shared it, and to everyone who clicks it, so these sites can map who knows who and who shares with whom. It does nothing for the person actually watching.
 
 **What the bot does**
-• Spots links with tracking IDs (and `utm_` marketing tags on any link), deletes that message, and reposts it with a clean link, your text intact, and a tag so you know it was yours.
+• Spots links with tracking IDs (and `utm_` tags on any link, unless they only say things like `share` or `copy-link`), deletes that message, and reposts it with a clean link, your text intact, and a tag so you know it was yours.
+• Leaves harmless extras alone: a link with only cosmetic bits like `?feature=shared` isn't touched. They're only tidied up when the link had a real tracking ID too.
 • For X and Instagram posts, adds a mirror link so the post shows up here without anyone needing to log in.
 • Don't want the tag-ping? Use `/linkcleaner-pings off`.
 
@@ -34,10 +35,13 @@ Questions? Ask a mod.
 
 ## Notes
 
+- The "Leaves harmless extras alone" bullet is true only at the default enforcement level. If you run
+  `/linkcleaner enforcement cosmetic:true`, delete that bullet (links with only cosmetic extras are then cleaned too).
 - The mod-log bullet is true only while `/linkcleaner modlog` is set to a channel. Delete the bullet if you turn it off.
-- The "`utm_` marketing tags on any link" wording is true only while the server-wide rule is on (the default).
+- The "`utm_` tags on any link" wording is true only while the server-wide rule is on (the default).
   If you run `/linkcleaner global disable`, delete that parenthesis. If you add parameters to the list
-  (`/linkcleaner global add fbclid`), the wording still holds.
+  (`/linkcleaner global add fbclid`), the wording still holds. A `utm_` value is left alone only if it is on the
+  generic list (`/linkcleaner global list`); anything else, such as a referral code, is treated as tracking.
 - The site names in the "What's a tracking link?" paragraph are examples of built-in sites. Edit them if you
   remove sites or add your own.
 - Discord's own retention of messages is outside the bot's control. The message deliberately doesn't promise
@@ -54,7 +58,8 @@ Questions? Ask a mod.
 | Mod log records who, where, original and cleaned link | `MessageHandler.ModLogAsync`, only when a mod-log channel is set |
 | Doesn't log your messages | Every `log.Log*` call records message id, channel name, counts or site names; never text, URLs or user ids |
 | Doesn't open or follow links | The only `HttpClient` use is `AttachmentDownloader`, which fetches an admin's `/linkcleaner import` file and refuses any host except Discord's attachment hosts (and never follows redirects). Nothing fetches URLs from messages |
-| `utm_` tags removed from any link | `GlobalRule.Default` (on, `utm_*`), applied by `LinkProcessor.Evaluate` to unlisted sites too; admins can change it |
+| Cosmetic-only links are left alone (default level) | `SiteRule.TidyParams` is applied by `LinkProcessor.Evaluate` only when `StripParams` or a path pattern already matched the same link, unless `Enforcement.IncludeCosmetic` is set (`/linkcleaner enforcement`) |
+| `utm_` tags removed from any link unless generic | `GlobalRule.Default` (on, click IDs; `utm_*` is value-gated by `GlobalRule.IsGeneric`), applied by `LinkProcessor.Evaluate` to unlisted sites too; admins can change both lists |
 | Can't see DMs | Intents are `Guilds`, `GuildMessages`, `MessageContent`; the handler ignores non-guild channels |
 | Mirror sites see requests | They are third-party services; the bot only writes their URL into a message |
 | No ads, analytics or selling | No such code or dependencies |

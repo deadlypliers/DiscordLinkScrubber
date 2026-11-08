@@ -13,9 +13,10 @@ public sealed record GuildConfig(
     IReadOnlySet<ulong> ExemptRoles,
     bool PingAuthor,
     IReadOnlySet<ulong> PingOptOuts,
-    GlobalRule? Global = null)
+    GlobalRule? Global = null,
+    Enforcement Enforcement = Enforcement.TrackingOnly)
 {
-    /// <summary>The server-wide strip list; the built-in default (utm_*) unless an admin changed it.</summary>
+    /// <summary>The server-wide strip list; the built-in default (click IDs plus value-aware utm_*) unless an admin changed it.</summary>
     public GlobalRule GlobalRule => Global ?? GlobalRule.Default;
 
     /// <summary>Built-in sites the admin edited that are behind the current default revision (so they missed an update).</summary>

@@ -1,5 +1,10 @@
 # Tracking parameters for the built-in sites added in revision 2
 
+> Revision 3 split each shipped list into **identifying** params (`StripParams`, which trigger a repost) and
+> **cosmetic** ones (`TidyParams`, removed only alongside an identifying hit). The table below lists everything
+> shipped, regardless of tier; see `DefaultSites.cs` for the split. `utm_*` is no longer in any site list: the
+> server-wide rule treats it by value (generic labels are noise, other values identify), see `GlobalRule.cs`.
+
 Checked on 2026-11-07 against the ClearURLs rules database (<https://rules2.clearurls.xyz/data.minify.json>,
 repo licence LGPL-3.0). It is used as a **reference only**: the lists in `DefaultSites.cs` were written by hand
 and contain only parameters it confirms, minus any that look functional.

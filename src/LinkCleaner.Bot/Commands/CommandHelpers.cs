@@ -56,13 +56,19 @@ internal static partial class CommandHelpers
         return $"**{s.Name}** — {(s.Enabled ? "enabled" : "**disabled**")}\n" +
                $"Hosts: {Join(s.Hosts)}\n" +
                $"Stripped params: {Join(s.StripParams)}\n" +
+               (s.TidyParams.Count > 0 ? $"Tidy params (only removed alongside a stripped one): {Join(s.TidyParams)}\n" : "") +
                (s.StripPathPatterns.Count > 0 ? $"Stripped path patterns: {Join(s.StripPathPatterns)}\n" : "") +
                $"Mirror: {mirror}" +
                (s.MirrorHost is { Length: > 0 } && s.MirrorPathPattern is not null ? $" (paths matching `{s.MirrorPathPattern}`)" : "");
     }
 
     public static string DescribeGlobal(GlobalRule g) =>
-        $"{(g.Enabled ? "on" : "**off**")}, removing {Join(g.StripParams)}";
+        $"{(g.Enabled ? "on" : "**off**")}, removing {Join(g.StripParams)}\n" +
+        $"`utm_*` params are removed when their value isn't one of these generic labels: {Join(g.EffectiveGenericValues)}";
+
+    /// <summary>A short label such as "copy-link": no whitespace or control characters, 64 characters max.</summary>
+    public static bool IsValidGenericValue(string? value) =>
+        value is { Length: > 0 and <= 64 } && value.All(c => !char.IsWhiteSpace(c) && !char.IsControl(c) && c != '&' && c != '#');
 
     public static string Join(IEnumerable<string> values)
     {

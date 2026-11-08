@@ -15,7 +15,8 @@ public sealed record ConfigBundle(
     GlobalRule Global,
     string InfoLink,
     string MirrorPrefix,
-    bool PingAuthor);
+    bool PingAuthor,
+    Enforcement Enforcement = Enforcement.TrackingOnly);
 
 public static class ConfigTransfer
 {
@@ -26,7 +27,7 @@ public static class ConfigTransfer
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
     public static string Export(GuildConfig cfg) => JsonSerializer.Serialize(
-        new ConfigBundle(FormatVersion, cfg.Sites, cfg.GlobalRule, cfg.InfoLink, cfg.MirrorPrefix, cfg.PingAuthor),
+        new ConfigBundle(FormatVersion, cfg.Sites, cfg.GlobalRule, cfg.InfoLink, cfg.MirrorPrefix, cfg.PingAuthor, cfg.Enforcement),
         JsonOptions);
 
     /// <summary>Parses and fully validates an import file. Nothing is written until this succeeds.</summary>
@@ -48,10 +49,14 @@ public static class ConfigTransfer
             return Fail($"Too many sites (max {MaxSites}).", out error);
         if (!Uri.TryCreate(parsed.InfoLink, UriKind.Absolute, out var info) || info.Scheme is not ("http" or "https"))
             return Fail("The info link isn't an http(s) URL.", out error);
+        if (!Enum.IsDefined(parsed.Enforcement))
+            return Fail("The enforcement level is invalid.", out error);
         if (parsed.MirrorPrefix.Length > 16)
             return Fail("The mirror prefix is too long.", out error);
         if (!ValidParams(parsed.Global.StripParams))
             return Fail("The server-wide parameter list is invalid.", out error);
+        if (parsed.Global.GenericValues is { } generic && !ValidGenericValues(generic))
+            return Fail("The generic utm value list is invalid.", out error);
 
         var names = new HashSet<string>();
         foreach (var site in parsed.Sites)
@@ -66,6 +71,8 @@ public static class ConfigTransfer
                 return Fail($"Site `{site.Name}` has an invalid host list.", out error);
             if (!ValidParams(site.StripParams))
                 return Fail($"Site `{site.Name}` has an invalid parameter list.", out error);
+            if (site.TidyParams is null || !ValidParams(site.TidyParams))
+                return Fail($"Site `{site.Name}` has an invalid tidy parameter list.", out error);
             if (site.StripPathPatterns.Count > 20 || !site.StripPathPatterns.All(ValidRegex))
                 return Fail($"Site `{site.Name}` has an invalid path pattern.", out error);
             if (site.MirrorHost is not null && !IsBareHost(site.MirrorHost))
@@ -89,6 +96,9 @@ public static class ConfigTransfer
 
     private static bool ValidParams(IReadOnlyList<string> values) =>
         values.Count <= 200 && values.All(v => v is not null && CommandHelpers.IsValidParamName(v));
+
+    private static bool ValidGenericValues(IReadOnlyList<string> values) =>
+        values.Count <= 200 && values.All(CommandHelpers.IsValidGenericValue);
 
     private static bool ValidRegex(string pattern) =>
         pattern is { Length: > 0 and <= 200 } && CommandHelpers.IsValidRegex(pattern);

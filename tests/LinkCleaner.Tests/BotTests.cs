@@ -190,6 +190,88 @@ public sealed class BotTests : IDisposable
     }
 
     [Fact]
+    public void Generic_utm_values_default_persist_per_guild_and_reset()
+    {
+        var store = NewStore();
+        Assert.Equal(GlobalRule.DefaultGenericValues, store.Get(Guild).GlobalRule.EffectiveGenericValues);
+
+        store.SetGenericValues(Guild, ["newsletter"]);
+        Assert.Equal(["newsletter"], NewStore().Get(Guild).GlobalRule.EffectiveGenericValues);
+        Assert.Equal(GlobalRule.DefaultGenericValues, store.Get(Guild + 1).GlobalRule.EffectiveGenericValues);
+
+        store.SetGenericValues(Guild, null);
+        Assert.Equal(GlobalRule.DefaultGenericValues, NewStore().Get(Guild).GlobalRule.EffectiveGenericValues);
+    }
+
+    [Fact]
+    public void Generic_values_round_trip_through_export_import_and_are_validated()
+    {
+        var source = NewStore();
+        source.SetGenericValues(Guild, ["newsletter", "copy-link"]);
+        Assert.True(ConfigTransfer.TryParse(ConfigTransfer.Export(source.Get(Guild)), out var bundle, out var error), error);
+
+        var target = NewStore();
+        target.ImportBundle(Guild + 1, bundle, replace: true);
+        Assert.Equal(["newsletter", "copy-link"], target.Get(Guild + 1).GlobalRule.EffectiveGenericValues);
+
+        bool Valid(GlobalRule g) => ConfigTransfer.TryParse(System.Text.Json.JsonSerializer.Serialize(
+            new ConfigBundle(ConfigTransfer.FormatVersion, [], g, ConfigStore.DefaultInfoLink, "🪞", true)), out _, out _);
+        Assert.True(Valid(GlobalRule.Default));
+        Assert.False(Valid(GlobalRule.Default with { GenericValues = ["has space"] }));
+        Assert.False(Valid(GlobalRule.Default with { GenericValues = [""] }));
+        Assert.False(Valid(GlobalRule.Default with { GenericValues = [new string('a', 65)] }));
+    }
+
+    [Fact]
+    public void Unedited_revision_zero_sites_still_upgrade_although_utm_left_their_lists()
+    {
+        // Revisions 1-2 listed utm_* per site; that must not make an unedited row look customised.
+        var cfg = MakeLegacyGuild(_ =>
+            SaveLegacy("reddit", DefaultSites.Create().Single(s => s.Name == "reddit") with
+                { StripParams = ["utm_*", "share_id", "correlation_id", "rdt", "ref", "ref_source"], TidyParams = [] })).Get(Guild);
+
+        var reddit = cfg.Sites.Single(s => s.Name == "reddit");
+        Assert.False(reddit.Customised);
+        Assert.Equal(DefaultSites.Revision, reddit.DefaultRevision);
+    }
+
+    [Fact]
+    public void Enforcement_defaults_to_tracking_only_persists_per_guild_and_round_trips()
+    {
+        var store = NewStore();
+        Assert.Equal(Enforcement.TrackingOnly, store.Get(Guild).Enforcement);
+
+        store.SetSetting(Guild, ConfigStore.EnforcementKey, "cosmetic");
+        Assert.Equal(Enforcement.IncludeCosmetic, NewStore().Get(Guild).Enforcement);
+        Assert.Equal(Enforcement.TrackingOnly, store.Get(Guild + 1).Enforcement);
+
+        Assert.True(ConfigTransfer.TryParse(ConfigTransfer.Export(store.Get(Guild)), out var bundle, out var error), error);
+        var target = NewStore();
+        target.ImportBundle(Guild + 1, bundle, replace: true);
+        Assert.Equal(Enforcement.IncludeCosmetic, target.Get(Guild + 1).Enforcement);
+
+        // Importing a tracking-only file resets a strict server.
+        var relaxed = bundle with { Enforcement = Enforcement.TrackingOnly };
+        target.ImportBundle(Guild + 1, relaxed, replace: false);
+        Assert.Equal(Enforcement.TrackingOnly, target.Get(Guild + 1).Enforcement);
+
+        store.SetSetting(Guild, ConfigStore.EnforcementKey, null);
+        Assert.Equal(Enforcement.TrackingOnly, NewStore().Get(Guild).Enforcement);
+    }
+
+    [Fact]
+    public void Old_export_files_without_enforcement_import_as_tracking_only_and_bad_values_are_rejected()
+    {
+        var json = ConfigTransfer.Export(NewStore().Get(Guild));
+        var legacy = System.Text.RegularExpressions.Regex.Replace(json, @",\s*""Enforcement"": \d+", "");
+        Assert.DoesNotContain("Enforcement", legacy);
+        Assert.True(ConfigTransfer.TryParse(legacy, out var bundle, out var error), error);
+        Assert.Equal(Enforcement.TrackingOnly, bundle.Enforcement);
+
+        Assert.False(ConfigTransfer.TryParse(json.Replace("\"Enforcement\": 0", "\"Enforcement\": 7"), out _, out _));
+    }
+
+    [Fact]
     public void Corrupt_global_params_fall_back_to_the_default()
     {
         var store = NewStore();
@@ -221,8 +303,9 @@ public sealed class BotTests : IDisposable
         cmd.ExecuteNonQuery();
     }
 
+    /// <summary>Stores a rule the way revisions 1-2 did: a single param list (no tidy tier) and no revision marker.</summary>
     private void SaveLegacy(string name, SiteRule rule) => Raw(
-        $"UPDATE sites SET json = '{System.Text.Json.JsonSerializer.Serialize(rule with { DefaultRevision = 0, Customised = false }).Replace("'", "''")}' " +
+        $"UPDATE sites SET json = '{System.Text.Json.JsonSerializer.Serialize(rule with { StripParams = [.. rule.StripParams, .. rule.TidyParams], TidyParams = [], DefaultRevision = 0, Customised = false }).Replace("'", "''")}' " +
         $"WHERE guild_id = {Guild} AND name = '{name}'");
 
     /// <summary>Rewinds a guild to how revision 1 stored it: only the original sites, no revision markers.</summary>
@@ -234,7 +317,7 @@ public sealed class BotTests : IDisposable
         foreach (var original in DefaultSites.Create().Where(s => DefaultSites.OriginalNames.Contains(s.Name)))
             SaveLegacy(original.Name, original);
         SaveLegacy("youtube", DefaultSites.Create().Single(s => s.Name == "youtube") with
-            { StripParams = ["si", "feature", "pp", "utm_*", "fbclid", "gclid"] }); // revision 1 had no "is"
+            { StripParams = ["si", "utm_*", "fbclid", "gclid"], TidyParams = ["feature", "pp"] }); // revision 1 had no "is"
         Raw($"DELETE FROM settings WHERE guild_id = {Guild} AND key = '{ConfigStore.DefaultsRevisionKey}'");
         tweak?.Invoke(store);
         return NewStore();
@@ -253,7 +336,7 @@ public sealed class BotTests : IDisposable
     [Fact]
     public void Legacy_guild_keeps_deleted_originals_deleted_and_edited_sites_untouched()
     {
-        var edited = DefaultSites.Create().Single(s => s.Name == "x") with { StripParams = ["only_this"] };
+        var edited = DefaultSites.Create().Single(s => s.Name == "x") with { StripParams = ["only_this"], TidyParams = [] };
         var cfg = MakeLegacyGuild(_ =>
         {
             Raw($"DELETE FROM sites WHERE guild_id = {Guild} AND name = 'twitch'"); // deleted before revisions existed
@@ -272,7 +355,7 @@ public sealed class BotTests : IDisposable
     {
         var cfg = MakeLegacyGuild(_ =>
             SaveLegacy("youtube", DefaultSites.Create().Single(s => s.Name == "youtube") with
-                { Enabled = false, StripParams = ["si", "feature", "pp", "utm_*", "fbclid", "gclid"] })).Get(Guild);
+                { Enabled = false, StripParams = ["si", "utm_*", "fbclid", "gclid"], TidyParams = ["feature", "pp"] })).Get(Guild);
 
         var youtube = cfg.Sites.Single(s => s.Name == "youtube");
         Assert.False(youtube.Enabled);
@@ -407,6 +490,9 @@ public sealed class BotTests : IDisposable
         Assert.False(Valid(With(ok with { MirrorPathPattern = "([unclosed" })));
         Assert.False(Valid(With(ok with { Hosts = ["not a host"] })));
         Assert.False(Valid(With(ok with { StripParams = ["bad&name"] })));
+        Assert.False(Valid(With(ok with { TidyParams = ["bad&name"] })));
+        Assert.False(Valid(With(ok with { TidyParams = null! })));
+        Assert.True(Valid(With(ok with { TidyParams = ["feature"] })));
         Assert.False(Valid(With(ok with { DefaultRevision = DefaultSites.Revision + 1 })));
         Assert.False(Valid(With(Enumerable.Range(0, ConfigTransfer.MaxSites + 1).Select(i => ok with { Name = "s" + i }).ToArray())));
     }

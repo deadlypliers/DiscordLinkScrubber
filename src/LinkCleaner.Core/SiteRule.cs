@@ -35,6 +35,14 @@ public sealed record SiteRule
     public IReadOnlyList<string> StripParams { get; init; } = [];
 
     /// <summary>
+    /// Cosmetic params (same syntax as <see cref="StripParams"/>) that don't identify anyone, e.g. YouTube's
+    /// "feature=shared". They are removed only from a link that is being cleaned anyway because it also
+    /// carried a <see cref="StripParams"/> match or path tracker; on their own they never trigger a repost
+    /// unless the server uses <see cref="Enforcement.IncludeCosmetic"/>.
+    /// </summary>
+    public IReadOnlyList<string> TidyParams { get; init; } = [];
+
+    /// <summary>
     /// Regexes removed from the URL path (never the query), for trackers that live in the path,
     /// e.g. Amazon's "/ref=nav_logo". Invalid or slow patterns are ignored.
     /// </summary>

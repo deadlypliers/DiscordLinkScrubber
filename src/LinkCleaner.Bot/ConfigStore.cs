@@ -20,8 +20,10 @@ public sealed class ConfigStore
     public const string MirrorPrefixKey = "mirror_prefix";
     public const string ModLogKey = "modlog_channel";
     public const string PingAuthorKey = "ping_author";
+    public const string EnforcementKey = "enforcement";
     public const string GlobalEnabledKey = "global_enabled";
     public const string GlobalParamsKey = "global_params";
+    public const string GenericValuesKey = "global_generic_values";
 
     public const string IncludeKind = "include";
     public const string ExcludeKind = "exclude";
@@ -117,7 +119,15 @@ public sealed class ConfigStore
         Put(MirrorPrefixKey, bundle.MirrorPrefix);
         Put(PingAuthorKey, bundle.PingAuthor ? "1" : "0");
         Put(GlobalEnabledKey, bundle.Global.Enabled ? "1" : "0");
+        if (bundle.Enforcement == Enforcement.IncludeCosmetic)
+            Put(EnforcementKey, "cosmetic");
+        else
+            Exec(c, "DELETE FROM settings WHERE guild_id = $g AND key = $k", ("$g", g), ("$k", EnforcementKey));
         Put(GlobalParamsKey, JsonSerializer.Serialize(bundle.Global.StripParams));
+        if (bundle.Global.GenericValues is { } generic)
+            Put(GenericValuesKey, JsonSerializer.Serialize(generic));
+        else
+            Exec(c, "DELETE FROM settings WHERE guild_id = $g AND key = $k", ("$g", g), ("$k", GenericValuesKey));
 
         tx.Commit();
     });
@@ -248,16 +258,25 @@ public sealed class ConfigStore
         }
     }
 
-    /// <summary>Revision 1 equals today's definition of the original sites, except YouTube then lacked "is".</summary>
+    /// <summary>
+    /// Revision 1 equals today's definition of the original sites, except YouTube then lacked "is" and
+    /// every param lived in one list (today's StripParams followed by TidyParams, in either order of the split).
+    /// </summary>
     private static bool MatchesEarlierDefault(SiteRule stored, SiteRule current)
     {
         static bool Same(SiteRule a, SiteRule b) =>
-            a.Hosts.SequenceEqual(b.Hosts) && a.StripParams.SequenceEqual(b.StripParams) &&
+            a.Hosts.SequenceEqual(b.Hosts) &&
+            // Revisions 1-2 also listed utm_* per site; it is now the (value-aware) server-wide rule's job.
+            a.StripParams.Where(p => p != "utm_*").Order().SequenceEqual(b.StripParams.Concat(b.TidyParams).Order()) &&
             a.StripPathPatterns.SequenceEqual(b.StripPathPatterns) &&
             a.MirrorHost == b.MirrorHost && a.MirrorPathPattern == b.MirrorPathPattern;
 
         return Same(stored, current) ||
-               Same(stored, current with { StripParams = current.StripParams.Where(p => p != "is").ToList() });
+               Same(stored, current with
+               {
+                   StripParams = current.StripParams.Where(p => p != "is").ToList(),
+                   TidyParams = current.TidyParams.Where(p => p != "is").ToList(),
+               });
     }
 
     private GuildConfig Load(ulong guildId)
@@ -296,22 +315,33 @@ public sealed class ConfigStore
                 // Pinging the poster is on unless an admin turned it off.
                 PingAuthor: settings.GetValueOrDefault(PingAuthorKey) != "0",
                 PingOptOuts: optOuts,
-                Global: LoadGlobal(settings));
+                Global: LoadGlobal(settings),
+                Enforcement: settings.GetValueOrDefault(EnforcementKey) == "cosmetic" ? Enforcement.IncludeCosmetic : Enforcement.TrackingOnly);
         }
     }
 
-    /// <summary>Unset settings mean the default (on, utm_*), so existing servers get it without any migration.</summary>
+    /// <summary>Unset settings mean the default (on, click IDs, value-aware utm_*), so existing servers get it without any migration.</summary>
     private static GlobalRule LoadGlobal(Dictionary<string, string> settings)
     {
         var enabled = settings.GetValueOrDefault(GlobalEnabledKey) != "0";
-        var parameters = GlobalRule.Default.StripParams;
+        IReadOnlyList<string> parameters = GlobalRule.Default.StripParams;
         if (settings.TryGetValue(GlobalParamsKey, out var json))
         {
             try { parameters = JsonSerializer.Deserialize<List<string>>(json) ?? parameters; }
             catch (JsonException) { /* corrupt value: fall back to the default */ }
         }
-        return new GlobalRule(enabled, parameters);
+        IReadOnlyList<string>? generic = null;
+        if (settings.TryGetValue(GenericValuesKey, out var genericJson))
+        {
+            try { generic = JsonSerializer.Deserialize<List<string>>(genericJson); }
+            catch (JsonException) { /* corrupt value: fall back to the default */ }
+        }
+        return new GlobalRule(enabled, parameters, generic);
     }
+
+    /// <summary>Replaces the allowlist of generic utm values; null restores the default.</summary>
+    public void SetGenericValues(ulong guildId, IReadOnlyList<string>? values) =>
+        SetSetting(guildId, GenericValuesKey, values is null ? null : JsonSerializer.Serialize(values));
 
     /// <summary>Replaces the server-wide strip list; null restores the default.</summary>
     public void SetGlobalParams(ulong guildId, IReadOnlyList<string>? parameters) =>

@@ -18,10 +18,18 @@ A ready-to-paste explanation for your rules channel, including what the bot does
 ## Behaviour details
 
 - Links on the configured **site list** get that site's parameters stripped. Links on other sites are left
-  alone, with one exception: the **server-wide rule** removes `utm_*` marketing tags from *any* link on *any* site
-  (it also applies on top of every site's own list). Admins can edit its list or switch it off with
-  `/linkcleaner global …`.
+  alone, with one exception: the **server-wide rule** removes known click/recipient IDs (`fbclid`, `gclid`, `msclkid`, …) and
+  tracking `utm_*` tags from *any* link on *any* site (it also applies on top of every site's own list).
+  `utm_*` is judged by value: generic share-button labels (`share`, `copy-link`, `web`, …) are harmless and
+  left alone, but any other value could be a referral code or username, so it counts as tracking. Admins can
+  edit both lists or switch the rule off with `/linkcleaner global …` (`generic-add` / `generic-remove` manage the labels).
 - Parameters that make a link work (`v`, `t`, `list`, …) are kept. Only listed parameters are stripped.
+- **Identifying vs. tidy parameters.** Each site has two lists. *Stripped* parameters carry an ID (`si`, `igsh`,
+  `fbclid`, affiliate `tag`, …) and are the only thing that makes the bot act. *Tidy* parameters are cosmetic
+  (`feature=shared`, `qid`, Google's `ved`/`ei`, …): they are removed from a link that is being cleaned anyway, but a
+  link carrying only tidy parameters is left alone, with no repost and no ping (admins who want those cleaned too can
+  set `/linkcleaner enforcement cosmetic:true`). Add a tidy parameter with `/linkcleaner param add … tidy:true`;
+  `param remove` works on either list.
 - Some trackers live in the path rather than the query (Amazon's `/ref=nav_logo`). Sites can list regexes to
   remove from the path with `/linkcleaner path add`.
 - **Built-in updates reach existing servers.** When a new release adds sites or parameters, sites you haven't
@@ -109,15 +117,16 @@ Everything is configured with slash commands, available to members with **Manage
 | `/linkcleaner site list` / `show` | Inspect site rules |
 | `/linkcleaner site enable` / `disable` | Turn a site on or off |
 | `/linkcleaner site add` / `remove` / `reset` | Add a custom site, delete one, or restore a built-in site's defaults |
-| `/linkcleaner param add` / `remove` | Choose which query parameters are stripped (`utm_*` style prefixes work) |
+| `/linkcleaner param add` / `remove` | Choose which query parameters are stripped (`foo_*` style prefixes work; `tidy:true` marks cosmetic ones) |
 | `/linkcleaner path add` / `remove` | Remove regex matches from a site's link paths (e.g. `/ref=[^/?#]*`) |
-| `/linkcleaner global list` / `add` / `remove` / `enable` / `disable` / `reset` | The server-wide parameter list applied to **every** link on any site (default: on, `utm_*`) |
+| `/linkcleaner global list` / `add` / `remove` / `generic-add` / `generic-remove` / `enable` / `disable` / `reset` | The server-wide rule applied to **every** link on any site (default: on; click IDs plus `utm_*` values that aren't generic labels) |
 | `/linkcleaner export` | Download rules and settings as `linkcleaner-config.json` |
 | `/linkcleaner import file:… [replace] [confirm]` | Load an exported file: merges sites by name, or `replace:true confirm:true` makes the site list match the file. Also applies the file's server-wide rule, info link, mirror prefix and ping setting |
 | `/linkcleaner host add` / `remove` | Treat more hostnames as the same site |
 | `/linkcleaner mirror set` / `clear` | Choose the mirror host for a site |
 | `/linkcleaner channel include` / `exclude` / `reset` / `clear` | Limit where the bot works (default: everywhere) |
 | `/linkcleaner role exempt` / `unexempt` | Exempt roles from cleaning |
+| `/linkcleaner enforcement cosmetic:…` | Default (false): only tracking IDs trigger a repost, cosmetic extras are tidied alongside. True: cosmetic extras like `?feature=shared` or generic `utm_*` labels are cleaned and reposted on their own too |
 | `/linkcleaner pings enabled:…` | Turn pinging the original poster on (default) or off for the whole server |
 | `/linkcleaner infolink url:…` | Set the "Why?" link |
 | `/linkcleaner prefix emoji:…` | Set (or remove) the emoji before mirror replies |

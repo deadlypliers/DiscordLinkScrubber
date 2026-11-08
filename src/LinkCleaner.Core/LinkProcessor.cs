@@ -19,8 +19,10 @@ public static partial class LinkProcessor
 
     private const string TrailingJunk = ".,;:!?'\"*~_";
 
-    /// <param name="global">Params stripped from every link, including sites not in <paramref name="sites"/>. Null means none.</param>
-    public static ProcessedMessage Process(string? content, IReadOnlyList<SiteRule> sites, GlobalRule? global = null)
+    /// <param name="global">Rules applied to every link, including sites not in <paramref name="sites"/>. Null means none.</param>
+    /// <param name="enforcement">Whether cosmetic params are a reason to act on their own.</param>
+    public static ProcessedMessage Process(string? content, IReadOnlyList<SiteRule> sites, GlobalRule? global = null,
+        Enforcement enforcement = Enforcement.TrackingOnly)
     {
         if (string.IsNullOrEmpty(content))
             return new ProcessedMessage("", "", [], false);
@@ -37,7 +39,7 @@ public static partial class LinkProcessor
                 continue;
 
             var raw = TrimTrailing(match.Value);
-            var result = Evaluate(raw, match.Index, sites, global is { Enabled: true } ? global.StripParams : []);
+            var result = Evaluate(raw, match.Index, sites, global is { Enabled: true } ? global : null, enforcement);
             if (result is not null)
                 links.Add(result);
         }
@@ -54,8 +56,23 @@ public static partial class LinkProcessor
         return new ProcessedMessage(content, sb.ToString(), links, HasUserText(content));
     }
 
-    private static LinkResult? Evaluate(string url, int start, IReadOnlyList<SiteRule> sites, IReadOnlyList<string> globalParams)
+    /// <summary>
+    /// A link is acted on only if something identifying is found: a listed site param, a global identifier,
+    /// a utm param with a non-generic value, or a path tracker. Only then are cosmetic params removed too,
+    /// unless <paramref name="enforcement"/> makes cosmetic params a reason to act as well.
+    /// </summary>
+    private static LinkResult? Evaluate(string url, int start, IReadOnlyList<SiteRule> sites, GlobalRule? global, Enforcement enforcement)
     {
+        var strict = enforcement == Enforcement.IncludeCosmetic;
+        Func<string, string, bool> Trigger(IReadOnlyList<string> sitePatterns, IReadOnlyList<string> siteTidy)
+        {
+            var identifying = Identifying(sitePatterns, global);
+            if (!strict)
+                return identifying;
+            var cosmetic = Cosmetic(siteTidy, global);
+            return (name, value) => identifying(name, value) || cosmetic(name, value);
+        }
+
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
             return null;
 
@@ -69,18 +86,34 @@ public static partial class LinkProcessor
             if (!isMirrorHost && !site.Hosts.Any(h => HostMatches(host, h)))
                 continue;
 
-            var (cleaned, removed) = StripParams(url, [.. site.StripParams, .. globalParams]);
+            var (cleaned, removed) = StripParams(url, Trigger(site.StripParams, site.TidyParams));
             var (noPath, pathRemoved) = StripPath(cleaned, site.StripPathPatterns);
+            var identifying = removed || pathRemoved;
+            if (identifying)
+                noPath = StripParams(noPath, Cosmetic(site.TidyParams, global)).Url;
             var mirror = isMirrorHost ? null : BuildMirror(noPath, new Uri(noPath).AbsolutePath, site);
-            return new LinkResult(url, start, site.Name, noPath, removed || pathRemoved, mirror);
+            return new LinkResult(url, start, site.Name, noPath, identifying, mirror);
         }
 
-        // Not a listed site: only the global params apply, and links without them are left alone.
-        if (globalParams.Count == 0)
+        // Not a listed site: only the global rule applies, and links without anything identifying are left alone.
+        if (global is null)
             return null;
-        var (globalCleaned, globalRemoved) = StripParams(url, globalParams);
-        return globalRemoved ? new LinkResult(url, start, GlobalRule.SiteName, globalCleaned, true, null) : null;
+        var (globalCleaned, globalRemoved) = StripParams(url, Trigger([], []));
+        if (!globalRemoved)
+            return null;
+        globalCleaned = StripParams(globalCleaned, Cosmetic([], global)).Url;
+        return new LinkResult(url, start, GlobalRule.SiteName, globalCleaned, true, null);
     }
+
+    private static Func<string, string, bool> Identifying(IReadOnlyList<string> sitePatterns, GlobalRule? global) =>
+        (name, value) => sitePatterns.Any(p => ParamMatches(name, p)) ||
+                         (global is not null &&
+                          (global.StripParams.Any(p => ParamMatches(name, p)) ||
+                           (GlobalRule.ValueGated.Any(p => ParamMatches(name, p)) && !global.IsGeneric(value))));
+
+    private static Func<string, string, bool> Cosmetic(IReadOnlyList<string> sitePatterns, GlobalRule? global) =>
+        (name, _) => sitePatterns.Any(p => ParamMatches(name, p)) ||
+                     (global is not null && GlobalRule.ValueGated.Any(p => ParamMatches(name, p)));
 
     /// <summary>Removes regex matches from the path only; query and fragment keep their exact text.</summary>
     public static (string Url, bool Removed) StripPath(string url, IReadOnlyList<string> patterns)
@@ -151,7 +184,11 @@ public static partial class LinkProcessor
     }
 
     /// <summary>Removes matching query params while leaving every other character of the URL untouched.</summary>
-    public static (string Url, bool Removed) StripParams(string url, IReadOnlyList<string> patterns)
+    public static (string Url, bool Removed) StripParams(string url, IReadOnlyList<string> patterns) =>
+        StripParams(url, (name, _) => patterns.Any(p => ParamMatches(name, p)));
+
+    /// <summary>Same, but the caller decides per param from its decoded name and value.</summary>
+    public static (string Url, bool Removed) StripParams(string url, Func<string, string, bool> shouldRemove)
     {
         var hash = url.IndexOf('#');
         var fragment = hash >= 0 ? url[hash..] : "";
@@ -171,7 +208,12 @@ public static partial class LinkProcessor
             try { name = Uri.UnescapeDataString(rawName); }
             catch (UriFormatException) { name = rawName; }
 
-            if (part.Length > 0 && patterns.Any(p => ParamMatches(name, p)))
+            var rawValue = eq >= 0 ? part[(eq + 1)..] : "";
+            string value;
+            try { value = Uri.UnescapeDataString(rawValue); }
+            catch (UriFormatException) { value = rawValue; }
+
+            if (part.Length > 0 && shouldRemove(name, value))
                 removed++;
             else
                 kept.Add(part);
