@@ -212,21 +212,6 @@ public class LinkProcessorTests
         Assert.Equal("https://youtu.be/abc?si=x", content.Substring(link.Start, link.Length));
     }
 
-    // ---- "They said" text ---------------------------------------------------------------
-
-    [Theory]
-    [InlineData("https://youtu.be/abc?si=x", false)]
-    [InlineData("  https://youtu.be/abc?si=x  ", false)]
-    [InlineData("||https://youtu.be/abc?si=x||", false)]
-    [InlineData("<https://youtu.be/abc?si=x>", false)]
-    [InlineData("check this out https://youtu.be/abc?si=x", true)]
-    [InlineData("https://youtu.be/abc?si=x lol", true)]
-    [InlineData("🔥 https://youtu.be/abc?si=x", true)]
-    public void Detects_whether_user_wrote_text(string input, bool expected)
-    {
-        Assert.Equal(expected, Run(input).HasUserText);
-    }
-
     // ---- StripParams directly -----------------------------------------------------------
 
     [Theory]

@@ -93,7 +93,7 @@ public sealed class LinkCleanerModule(ConfigStore store, AttachmentDownloader do
     public async Task Test([Summary(description: "Paste a message or link to test")] string text)
     {
         var cfg = store.Get(Context.Guild.Id);
-        var result = LinkProcessor.Process(text, cfg.Sites, cfg.GlobalRule);
+        var result = LinkProcessor.Process(text, cfg.Sites, cfg.GlobalRule, cfg.Enforcement);
         if (!result.HasWork)
         {
             await this.Say("Nothing to do: no tracking params found and no mirror applies.");
@@ -102,13 +102,16 @@ public sealed class LinkCleanerModule(ConfigStore store, AttachmentDownloader do
 
         var sb = new StringBuilder();
         if (result.HasTrackingRemoved)
-            sb.AppendLine($"**Repost with:**\n{result.RewrittenContent}\n");
+        {
+            var (repost, _) = MessageHandler.ComposeRepost(Context.User.Mention, result, cfg.InfoLink, ping: false, hasFiles: false);
+            sb.AppendLine($"**Repost would look like:**\n{string.Join('\n', repost.Split('\n').Select(l => "> " + l))}\n");
+        }
         if (result.MirrorReplyLinks.Count > 0)
             sb.AppendLine($"**Mirror reply:**\n{string.Join('\n', result.MirrorReplyLinks.Select(l => $"<{l}>"))}");
         await this.Say(sb.ToString());
     }
 
-    [SlashCommand("infolink", "Set the 'Why?' link shown in the explanation.")]
+    [SlashCommand("infolink", "Set the 'Why did this happen?' link shown on reposts.")]
     public async Task InfoLink([Summary(description: "An http(s) URL, e.g. a message link in your server")] string url)
     {
         if (!Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https"))

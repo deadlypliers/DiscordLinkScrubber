@@ -25,7 +25,7 @@ public static partial class LinkProcessor
         Enforcement enforcement = Enforcement.TrackingOnly)
     {
         if (string.IsNullOrEmpty(content))
-            return new ProcessedMessage("", "", [], false);
+            return new ProcessedMessage("", "", []);
 
         var codeRanges = CodeRegex().Matches(content).Select(m => (m.Index, End: m.Index + m.Length)).ToList();
         var links = new List<LinkResult>();
@@ -53,7 +53,7 @@ public static partial class LinkProcessor
         }
         sb.Append(content, pos, content.Length - pos);
 
-        return new ProcessedMessage(content, sb.ToString(), links, HasUserText(content));
+        return new ProcessedMessage(content, sb.ToString(), links);
     }
 
     /// <summary>
@@ -268,10 +268,4 @@ public static partial class LinkProcessor
         ']' => url.Count(c => c == ']') > url.Count(c => c == '['),
         _ => false,
     };
-
-    private static bool HasUserText(string content)
-    {
-        var withoutUrls = UrlRegex().Replace(content, "");
-        return withoutUrls.Any(c => !char.IsWhiteSpace(c) && "<>|*_~()[]".IndexOf(c) < 0);
-    }
 }

@@ -312,8 +312,8 @@ public sealed class ConfigStore
                 filters.Where(f => f.Kind == IncludeKind).Select(f => f.Id).ToHashSet(),
                 filters.Where(f => f.Kind == ExcludeKind).Select(f => f.Id).ToHashSet(),
                 roles,
-                // Pinging the poster is on unless an admin turned it off.
-                PingAuthor: settings.GetValueOrDefault(PingAuthorKey) != "0",
+                // Pinging the poster is off unless an admin turned it on.
+                PingAuthor: settings.GetValueOrDefault(PingAuthorKey) == "1",
                 PingOptOuts: optOuts,
                 Global: LoadGlobal(settings),
                 Enforcement: settings.GetValueOrDefault(EnforcementKey) == "cosmetic" ? Enforcement.IncludeCosmetic : Enforcement.TrackingOnly);

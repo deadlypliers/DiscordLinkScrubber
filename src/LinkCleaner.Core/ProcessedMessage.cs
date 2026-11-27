@@ -3,8 +3,7 @@ namespace LinkCleaner.Core;
 public sealed record ProcessedMessage(
     string Content,
     string RewrittenContent,
-    IReadOnlyList<LinkResult> Links,
-    bool HasUserText)
+    IReadOnlyList<LinkResult> Links)
 {
     /// <summary>True if any link carried tracking params: the message should be reposted.</summary>
     public bool HasTrackingRemoved => Links.Any(l => l.TrackingRemoved);

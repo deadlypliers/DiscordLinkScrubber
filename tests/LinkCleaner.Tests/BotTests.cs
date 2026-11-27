@@ -115,17 +115,17 @@ public sealed class BotTests : IDisposable
     }
 
     [Fact]
-    public void Pinging_the_poster_defaults_on_and_the_setting_persists()
+    public void Pinging_the_poster_defaults_off_and_the_setting_persists()
     {
         var store = NewStore();
-        Assert.True(store.Get(Guild).PingAuthor);
-
-        store.SetSetting(Guild, ConfigStore.PingAuthorKey, "0");
-        Assert.False(NewStore().Get(Guild).PingAuthor);
+        Assert.False(store.Get(Guild).PingAuthor);
 
         store.SetSetting(Guild, ConfigStore.PingAuthorKey, "1");
         Assert.True(NewStore().Get(Guild).PingAuthor);
-        Assert.True(store.Get(Guild + 1).PingAuthor); // other guilds unaffected
+        Assert.False(store.Get(Guild + 1).PingAuthor); // other guilds unaffected
+
+        store.SetSetting(Guild, ConfigStore.PingAuthorKey, "0");
+        Assert.False(NewStore().Get(Guild).PingAuthor);
     }
 
     [Fact]
@@ -146,7 +146,7 @@ public sealed class BotTests : IDisposable
     [Fact]
     public void Only_the_poster_is_ever_pinged_and_only_when_allowed()
     {
-        var cfg = NewStore().Get(Guild);
+        var cfg = NewStore().Get(Guild) with { PingAuthor = true };
 
         var on = MessageHandler.BuildAllowedMentions(cfg, 42);
         // Discord.Net throws if the Users flag is combined with a UserIds list (this failed live),
@@ -166,6 +166,47 @@ public sealed class BotTests : IDisposable
         Assert.False(MessageHandler.ShouldPing(optedOut, 42));
         Assert.True(MessageHandler.ShouldPing(optedOut, 43)); // someone else still gets pinged
         Assert.Equal(AllowedMentionTypes.None, MessageHandler.BuildAllowedMentions(optedOut, 42).AllowedTypes ?? AllowedMentionTypes.None);
+    }
+
+    [Theory]
+    [InlineData(false, false, true, "From <@42>:\nlook https://youtu.be/abc\n-# [Why did this happen?](<https://info>)")]
+    [InlineData(true, false, true, "From <@42>:\nlook https://youtu.be/abc\n-# [Why did this happen?](<https://info>) · No pings: /linkcleaner-pings off")]
+    [InlineData(false, true, false, "Clean link for <@42>:\nhttps://youtu.be/abc\n-# [Why did this happen?](<https://info>)")]
+    [InlineData(true, true, false, "Clean link for <@42>:\nhttps://youtu.be/abc\n-# [Why did this happen?](<https://info>) · No pings: /linkcleaner-pings off")]
+    public void Repost_text_is_neutral_with_a_small_footer(bool ping, bool hasFiles, bool replaces, string expected)
+    {
+        var processed = Process("look https://youtu.be/abc?si=x");
+
+        var repost = MessageHandler.ComposeRepost("<@42>", processed, "https://info", ping, hasFiles);
+
+        Assert.Equal((expected, replaces), repost);
+    }
+
+    [Fact]
+    public void Over_long_repost_keeps_the_original_and_sends_only_the_links()
+    {
+        var processed = Process(new string('a', 2000) + " https://youtu.be/abc?si=x");
+
+        var (text, replaces) = MessageHandler.ComposeRepost("<@42>", processed, "https://info", ping: false, hasFiles: false);
+
+        Assert.False(replaces);
+        Assert.StartsWith("Clean link for <@42>:\nhttps://youtu.be/abc\n", text);
+    }
+
+    [Fact]
+    public void Kept_original_reply_lists_every_cleaned_link()
+    {
+        var processed = Process("https://youtu.be/abc?si=x and https://youtu.be/def?si=y");
+
+        var (text, _) = MessageHandler.ComposeRepost("<@42>", processed, "https://info", ping: false, hasFiles: true);
+
+        Assert.StartsWith("Clean links for <@42>:\nhttps://youtu.be/abc\nhttps://youtu.be/def\n", text);
+    }
+
+    private ProcessedMessage Process(string content)
+    {
+        var cfg = NewStore().Get(Guild);
+        return LinkProcessor.Process(content, cfg.Sites, cfg.GlobalRule, cfg.Enforcement);
     }
 
     [Fact]
