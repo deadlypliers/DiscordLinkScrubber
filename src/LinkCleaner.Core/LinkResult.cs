@@ -1,9 +1,9 @@
 namespace LinkCleaner.Core;
 
-/// <summary>One link found in a message that belongs to a configured site.</summary>
+/// <summary>One link found in a message that a site rule or the server-wide rule applies to.</summary>
 /// <param name="Original">The link exactly as written.</param>
 /// <param name="Start">Offset of the link in the message content.</param>
-/// <param name="Site">Name of the matching <see cref="SiteRule"/>.</param>
+/// <param name="Site">Name of the matching <see cref="SiteRule"/>, or <see cref="GlobalRule.SiteName"/>.</param>
 /// <param name="Cleaned">The link with tracking params removed (equals Original if none).</param>
 /// <param name="TrackingRemoved">True if at least one tracking param was stripped.</param>
 /// <param name="Mirror">Embed-friendly mirror of the cleaned link, if the site has one and applies.</param>

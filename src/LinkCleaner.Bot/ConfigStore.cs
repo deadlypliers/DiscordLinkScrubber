@@ -93,7 +93,7 @@ public sealed class ConfigStore
     {
         Exec(c, "DELETE FROM sites WHERE guild_id = $g AND name = $n", ("$g", g), ("$n", name));
         // Remember deleted built-ins so a later default update doesn't bring them back.
-        if (DefaultSites.Create().Any(s => s.Name == name))
+        if (DefaultSites.Names.Contains(name))
             MarkDeleted(c, g, name);
     });
 
@@ -118,7 +118,7 @@ public sealed class ConfigStore
         }
 
         if (replace)
-            foreach (var def in DefaultSites.Create().Where(d => bundle.Sites.All(s => s.Name != d.Name)))
+            foreach (var def in DefaultSites.All.Where(d => bundle.Sites.All(s => s.Name != d.Name)))
                 MarkDeleted(c, g, def.Name);
 
         WriteSetting(c, g, InfoLinkKey, bundle.InfoLink);
@@ -207,7 +207,7 @@ public sealed class ConfigStore
             // Pinging the poster is off unless an admin turned it on.
             PingAuthor: settings.GetValueOrDefault(PingAuthorKey) == "1",
             PingOptOuts: optOuts,
-            Global: LoadGlobal(settings),
+            GlobalRule: LoadGlobal(settings),
             Enforcement: settings.GetValueOrDefault(EnforcementKey) == "cosmetic" ? Enforcement.IncludeCosmetic : Enforcement.TrackingOnly);
     }
 
@@ -247,7 +247,7 @@ public sealed class ConfigStore
 
         using var tx = c.BeginTransaction();
         if (!seeded)
-            foreach (var rule in DefaultSites.Create())
+            foreach (var rule in DefaultSites.All)
                 PutSite(c, g, rule, keepExisting: true);
         else
             ApplyDefaultUpdates(c, g, legacy: revision == 0);
@@ -265,7 +265,7 @@ public sealed class ConfigStore
             .ToDictionary(s => s.Name);
         var deleted = Query(c, "SELECT name FROM deleted_defaults WHERE guild_id = $g", r => r.GetString(0), ("$g", g)).ToHashSet();
 
-        foreach (var def in DefaultSites.Create())
+        foreach (var def in DefaultSites.All)
         {
             if (!stored.TryGetValue(def.Name, out var current))
             {

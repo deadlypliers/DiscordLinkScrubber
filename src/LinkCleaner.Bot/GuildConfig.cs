@@ -13,16 +13,12 @@ public sealed record GuildConfig(
     IReadOnlySet<ulong> ExemptRoles,
     bool PingAuthor,
     IReadOnlySet<ulong> PingOptOuts,
-    GlobalRule? Global = null,
-    Enforcement Enforcement = Enforcement.TrackingOnly)
+    GlobalRule GlobalRule,
+    Enforcement Enforcement)
 {
-    /// <summary>The server-wide strip list; the built-in default (click IDs plus value-aware utm_*) unless an admin changed it.</summary>
-    public GlobalRule GlobalRule => Global ?? GlobalRule.Default;
-
     /// <summary>Built-in sites the admin edited that are behind the current default revision (so they missed an update).</summary>
     public IReadOnlyList<string> OutdatedBuiltIns =>
-        Sites.Where(s => s.Customised && s.DefaultRevision < DefaultSites.Revision &&
-                         DefaultSites.Create().Any(d => d.Name == s.Name))
+        Sites.Where(s => s.Customised && s.DefaultRevision < DefaultSites.Revision && DefaultSites.Names.Contains(s.Name))
             .Select(s => s.Name).ToList();
 
     /// <summary>

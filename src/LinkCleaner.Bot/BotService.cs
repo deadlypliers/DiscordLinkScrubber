@@ -21,9 +21,8 @@ public sealed class BotService(
 {
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        var token = configuration["DISCORD_TOKEN"];
-        if (string.IsNullOrWhiteSpace(token))
-            throw new InvalidOperationException("The DISCORD_TOKEN environment variable is not set.");
+        // Program.cs exits before the host starts if this is missing.
+        var token = configuration["DISCORD_TOKEN"]!;
 
         client.Log += OnLog;
         interactions.Log += OnLog;

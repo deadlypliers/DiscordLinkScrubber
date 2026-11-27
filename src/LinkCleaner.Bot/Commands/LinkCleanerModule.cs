@@ -217,7 +217,7 @@ public sealed class LinkCleanerModule(ConfigStore store, AttachmentDownloader do
         [SlashCommand("reset", "Restore a built-in site to its defaults.")]
         public async Task Reset([Autocomplete(typeof(SiteAutocomplete))] string site)
         {
-            var original = DefaultSites.Create().FirstOrDefault(s => s.Name == site);
+            var original = DefaultSites.All.FirstOrDefault(s => s.Name == site);
             if (original is null)
             {
                 await this.Say($"`{site}` isn't a built-in site, so there are no defaults to restore.");

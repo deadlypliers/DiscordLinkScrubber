@@ -226,15 +226,12 @@ public static partial class LinkProcessor
         return (rest[..q] + (query.Length > 0 ? "?" + query : "") + fragment, true);
     }
 
-    private static bool ParamMatches(string name, string pattern)
-    {
-        pattern = pattern.Trim();
-        if (pattern.Length == 0)
-            return false;
-        return pattern.EndsWith('*')
+    /// <summary>Patterns are stored validated (no whitespace), so they are used as-is.</summary>
+    private static bool ParamMatches(string name, string pattern) =>
+        pattern.Length > 0 &&
+        (pattern.EndsWith('*')
             ? name.StartsWith(pattern[..^1], StringComparison.OrdinalIgnoreCase)
-            : name.Equals(pattern, StringComparison.OrdinalIgnoreCase);
-    }
+            : name.Equals(pattern, StringComparison.OrdinalIgnoreCase));
 
     private static string NormalizeHost(string host)
     {
