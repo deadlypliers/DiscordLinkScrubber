@@ -127,9 +127,9 @@ public sealed class LinkCleanerModule(ConfigStore store, AttachmentDownloader do
     public async Task Prefix([Summary(description: "Emoji or short text; omit to remove")] string? emoji = null)
     {
         emoji = emoji?.Trim() ?? "";
-        if (emoji.Length > 16)
+        if (emoji.Length > Limits.MirrorPrefixLength)
         {
-            await this.Say("Keep the prefix short (16 characters or fewer).");
+            await this.Say($"Keep the prefix short ({Limits.MirrorPrefixLength} characters or fewer).");
             return;
         }
         store.SetSetting(Context.Guild.Id, ConfigStore.MirrorPrefixKey, emoji);
@@ -169,7 +169,7 @@ public sealed class LinkCleanerModule(ConfigStore store, AttachmentDownloader do
         [SlashCommand("list", "List all sites.")]
         public Task List() =>
             this.Say(string.Join("\n\n", store.Get(Context.Guild.Id).Sites.Select(CommandHelpers.Describe)) is { Length: > 0 } text
-                ? (text.Length > 1900 ? text[..1900] + "…" : text)
+                ? text
                 : "No sites configured.");
 
         [SlashCommand("show", "Show one site's rules.")]
@@ -268,6 +268,8 @@ public sealed class LinkCleanerModule(ConfigStore store, AttachmentDownloader do
             if (!CommandHelpers.IsValidParamName(name)) { await this.Say("That isn't a valid parameter name."); return; }
             if (rule.StripParams.Concat(rule.TidyParams).Contains(name, StringComparer.OrdinalIgnoreCase))
             { await this.Say($"`{name}` is already on `{site}`'s list."); return; }
+            if ((tidy ? rule.TidyParams : rule.StripParams).Count >= Limits.EntriesPerList)
+            { await this.Say(CommandHelpers.ListFull(Limits.EntriesPerList)); return; }
 
             if (tidy)
             {
@@ -315,6 +317,7 @@ public sealed class LinkCleanerModule(ConfigStore store, AttachmentDownloader do
             var global = store.Get(Context.Guild.Id).GlobalRule;
             if (!CommandHelpers.IsValidParamName(name)) { await this.Say("That isn't a valid parameter name."); return; }
             if (global.StripParams.Contains(name, StringComparer.OrdinalIgnoreCase)) { await this.Say($"`{name}` is already on the list."); return; }
+            if (global.StripParams.Count >= Limits.EntriesPerList) { await this.Say(CommandHelpers.ListFull(Limits.EntriesPerList)); return; }
 
             store.SetGlobalParams(Context.Guild.Id, [.. global.StripParams, name]);
             await this.Say($"`{name}` will now be removed from every link." + (global.Enabled ? "" : " (The global rule is currently disabled: `/linkcleaner global enable`.)"));
@@ -339,6 +342,7 @@ public sealed class LinkCleanerModule(ConfigStore store, AttachmentDownloader do
             var global = store.Get(Context.Guild.Id).GlobalRule;
             if (!CommandHelpers.IsValidGenericValue(value)) { await this.Say("That isn't a valid value (no spaces, 64 characters max)."); return; }
             if (global.EffectiveGenericValues.Contains(value, StringComparer.OrdinalIgnoreCase)) { await this.Say($"`{value}` is already generic."); return; }
+            if (global.EffectiveGenericValues.Count >= Limits.EntriesPerList) { await this.Say(CommandHelpers.ListFull(Limits.EntriesPerList)); return; }
 
             store.SetGenericValues(Context.Guild.Id, [.. global.EffectiveGenericValues, value]);
             await this.Say($"`utm_*` params with the value `{value}` will now be left alone.");
@@ -392,8 +396,9 @@ public sealed class LinkCleanerModule(ConfigStore store, AttachmentDownloader do
         {
             var rule = store.Get(Context.Guild.Id).Sites.FirstOrDefault(s => s.Name == site);
             if (rule is null) { await this.Say($"No site named `{site}`."); return; }
-            if (pattern.Length is 0 or > 200 || !CommandHelpers.IsValidRegex(pattern)) { await this.Say("That isn't a valid regex (200 characters max)."); return; }
+            if (!CommandHelpers.IsValidRegex(pattern)) { await this.Say(CommandHelpers.InvalidRegex); return; }
             if (rule.StripPathPatterns.Contains(pattern)) { await this.Say("That pattern is already listed."); return; }
+            if (rule.StripPathPatterns.Count >= Limits.PathPatternsPerSite) { await this.Say(CommandHelpers.ListFull(Limits.PathPatternsPerSite)); return; }
 
             store.SaveSite(Context.Guild.Id, rule with { StripPathPatterns = [.. rule.StripPathPatterns, pattern] });
             await this.Say($"`{site}` link paths will have text matching `{pattern}` removed.");
@@ -425,6 +430,7 @@ public sealed class LinkCleanerModule(ConfigStore store, AttachmentDownloader do
             if (rule is null) { await this.Say($"No site named `{site}`."); return; }
             if (!CommandHelpers.TryNormalizeHost(host, out var normalized)) { await this.Say("That doesn't look like a hostname."); return; }
             if (rule.Hosts.Contains(normalized)) { await this.Say($"`{normalized}` is already covered."); return; }
+            if (rule.Hosts.Count >= Limits.HostsPerSite) { await this.Say(CommandHelpers.ListFull(Limits.HostsPerSite)); return; }
 
             store.SaveSite(Context.Guild.Id, rule with { Hosts = [.. rule.Hosts, normalized] });
             await this.Say($"`{site}` now also covers `{normalized}` and its subdomains.");
@@ -459,7 +465,7 @@ public sealed class LinkCleanerModule(ConfigStore store, AttachmentDownloader do
             var rule = store.Get(Context.Guild.Id).Sites.FirstOrDefault(s => s.Name == site);
             if (rule is null) { await this.Say($"No site named `{site}`."); return; }
             if (!CommandHelpers.TryNormalizeHost(host, out var normalized)) { await this.Say("That doesn't look like a hostname."); return; }
-            if (pathPattern is not null && !CommandHelpers.IsValidRegex(pathPattern)) { await this.Say("That path pattern isn't a valid regex."); return; }
+            if (pathPattern is not null && !CommandHelpers.IsValidRegex(pathPattern)) { await this.Say(CommandHelpers.InvalidRegex); return; }
 
             store.SaveSite(Context.Guild.Id, rule with { MirrorHost = normalized, MirrorPathPattern = pathPattern ?? rule.MirrorPathPattern });
             await this.Say($"`{site}` links will be mirrored via `{normalized}`.");

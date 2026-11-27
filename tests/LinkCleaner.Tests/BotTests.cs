@@ -538,6 +538,42 @@ public sealed class BotTests : IDisposable
         Assert.False(Valid(With(Enumerable.Range(0, ConfigTransfer.MaxSites + 1).Select(i => ok with { Name = "s" + i }).ToArray())));
     }
 
+    [Fact]
+    public void Import_accepts_everything_up_to_the_shared_limits_and_nothing_beyond()
+    {
+        bool Valid(SiteRule site, GlobalRule? global = null) => ConfigTransfer.TryParse(System.Text.Json.JsonSerializer.Serialize(
+            new ConfigBundle(ConfigTransfer.FormatVersion, [site], global ?? GlobalRule.Default, ConfigStore.DefaultInfoLink, "🪞", true)), out _, out _);
+        string[] Many(int n, string prefix) => Enumerable.Range(0, n).Select(i => prefix + i).ToArray();
+        var atLimit = new SiteRule
+        {
+            Name = "full",
+            Hosts = Many(Limits.HostsPerSite, "h").Select(h => h + ".example").ToArray(),
+            StripParams = Many(Limits.EntriesPerList, "p"),
+            TidyParams = Many(Limits.EntriesPerList, "t"),
+            StripPathPatterns = Many(Limits.PathPatternsPerSite, "/x"),
+            MirrorHost = "mirror.example",
+            MirrorPathPattern = new string('a', Limits.RegexLength),
+        };
+
+        Assert.True(Valid(atLimit, new GlobalRule(true, Many(Limits.EntriesPerList, "g"), Many(Limits.EntriesPerList, "v"))));
+        Assert.False(Valid(atLimit with { Hosts = [.. atLimit.Hosts, "one-more.example"] }));
+        Assert.False(Valid(atLimit with { StripParams = [.. atLimit.StripParams, "extra"] }));
+        Assert.False(Valid(atLimit with { TidyParams = [.. atLimit.TidyParams, "extra"] }));
+        Assert.False(Valid(atLimit with { StripPathPatterns = [.. atLimit.StripPathPatterns, "/y"] }));
+        Assert.False(Valid(atLimit with { MirrorPathPattern = new string('a', Limits.RegexLength + 1) }));
+        Assert.False(Valid(atLimit, new GlobalRule(true, Many(Limits.EntriesPerList + 1, "g"))));
+    }
+
+    [Fact]
+    public void Long_text_is_cut_to_one_discord_message()
+    {
+        Assert.Equal("short", Limits.FitMessage("short"));
+        var fitted = Limits.FitMessage(new string('a', Limits.MessageLength + 50));
+        Assert.Equal(Limits.MessageLength, fitted.Length);
+        Assert.EndsWith("…", fitted);
+        Assert.Equal(Limits.MessageLength, Limits.FitMessage(new string('a', Limits.MessageLength)).Length);
+    }
+
     [Theory]
     [InlineData("https://cdn.discordapp.com/attachments/1/2/config.json?ex=1&is=2&hm=3", true)]
     [InlineData("https://media.discordapp.net/attachments/1/2/config.json", true)]

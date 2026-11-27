@@ -66,7 +66,17 @@ public sealed class ConfigStore
         }
     }
 
-    public GuildConfig Get(ulong guildId) => _cache.GetOrAdd(guildId, Load);
+    /// <summary>
+    /// Cached reads are lock-free. A miss loads and caches under the same lock writes hold, so a write can't
+    /// clear the cache between a load and its caching and leave a stale snapshot behind.
+    /// </summary>
+    public GuildConfig Get(ulong guildId)
+    {
+        if (_cache.TryGetValue(guildId, out var cached))
+            return cached;
+        lock (_gate)
+            return _cache.GetOrAdd(guildId, Load);
+    }
 
     // ---- Sites -------------------------------------------------------------------------
 
@@ -279,45 +289,43 @@ public sealed class ConfigStore
                });
     }
 
+    /// <summary>Caller holds <see cref="_gate"/>.</summary>
     private GuildConfig Load(ulong guildId)
     {
-        lock (_gate)
-        {
-            using var c = Open();
-            EnsureSeeded(c, guildId);
-            var g = (long)guildId;
+        using var c = Open();
+        EnsureSeeded(c, guildId);
+        var g = (long)guildId;
 
-            var sites = Query(c, "SELECT json FROM sites WHERE guild_id = $g ORDER BY name", r => r.GetString(0), ("$g", g))
-                .Select(j => JsonSerializer.Deserialize<SiteRule>(j)!)
-                .ToList();
+        var sites = Query(c, "SELECT json FROM sites WHERE guild_id = $g ORDER BY name", r => r.GetString(0), ("$g", g))
+            .Select(j => JsonSerializer.Deserialize<SiteRule>(j)!)
+            .ToList();
 
-            var settings = Query(c, "SELECT key, value FROM settings WHERE guild_id = $g",
-                    r => (Key: r.GetString(0), Value: r.GetString(1)), ("$g", g))
-                .ToDictionary(x => x.Key, x => x.Value);
+        var settings = Query(c, "SELECT key, value FROM settings WHERE guild_id = $g",
+                r => (Key: r.GetString(0), Value: r.GetString(1)), ("$g", g))
+            .ToDictionary(x => x.Key, x => x.Value);
 
-            var filters = Query(c, "SELECT channel_id, kind FROM channel_filters WHERE guild_id = $g",
-                r => (Id: (ulong)r.GetInt64(0), Kind: r.GetString(1)), ("$g", g)).ToList();
+        var filters = Query(c, "SELECT channel_id, kind FROM channel_filters WHERE guild_id = $g",
+            r => (Id: (ulong)r.GetInt64(0), Kind: r.GetString(1)), ("$g", g)).ToList();
 
-            var roles = Query(c, "SELECT role_id FROM exempt_roles WHERE guild_id = $g",
-                r => (ulong)r.GetInt64(0), ("$g", g)).ToHashSet();
+        var roles = Query(c, "SELECT role_id FROM exempt_roles WHERE guild_id = $g",
+            r => (ulong)r.GetInt64(0), ("$g", g)).ToHashSet();
 
-            var optOuts = Query(c, "SELECT user_id FROM ping_optouts WHERE guild_id = $g",
-                r => (ulong)r.GetInt64(0), ("$g", g)).ToHashSet();
+        var optOuts = Query(c, "SELECT user_id FROM ping_optouts WHERE guild_id = $g",
+            r => (ulong)r.GetInt64(0), ("$g", g)).ToHashSet();
 
-            return new GuildConfig(
-                sites,
-                settings.GetValueOrDefault(InfoLinkKey) ?? DefaultInfoLink,
-                settings.GetValueOrDefault(MirrorPrefixKey) ?? DefaultMirrorPrefix,
-                settings.TryGetValue(ModLogKey, out var modlog) && ulong.TryParse(modlog, out var modlogId) ? modlogId : null,
-                filters.Where(f => f.Kind == IncludeKind).Select(f => f.Id).ToHashSet(),
-                filters.Where(f => f.Kind == ExcludeKind).Select(f => f.Id).ToHashSet(),
-                roles,
-                // Pinging the poster is off unless an admin turned it on.
-                PingAuthor: settings.GetValueOrDefault(PingAuthorKey) == "1",
-                PingOptOuts: optOuts,
-                Global: LoadGlobal(settings),
-                Enforcement: settings.GetValueOrDefault(EnforcementKey) == "cosmetic" ? Enforcement.IncludeCosmetic : Enforcement.TrackingOnly);
-        }
+        return new GuildConfig(
+            sites,
+            settings.GetValueOrDefault(InfoLinkKey) ?? DefaultInfoLink,
+            settings.GetValueOrDefault(MirrorPrefixKey) ?? DefaultMirrorPrefix,
+            settings.TryGetValue(ModLogKey, out var modlog) && ulong.TryParse(modlog, out var modlogId) ? modlogId : null,
+            filters.Where(f => f.Kind == IncludeKind).Select(f => f.Id).ToHashSet(),
+            filters.Where(f => f.Kind == ExcludeKind).Select(f => f.Id).ToHashSet(),
+            roles,
+            // Pinging the poster is off unless an admin turned it on.
+            PingAuthor: settings.GetValueOrDefault(PingAuthorKey) == "1",
+            PingOptOuts: optOuts,
+            Global: LoadGlobal(settings),
+            Enforcement: settings.GetValueOrDefault(EnforcementKey) == "cosmetic" ? Enforcement.IncludeCosmetic : Enforcement.TrackingOnly);
     }
 
     /// <summary>Unset settings mean the default (on, click IDs, value-aware utm_*), so existing servers get it without any migration.</summary>

@@ -11,9 +11,9 @@ internal static partial class CommandHelpers
     [GeneratedRegex("^[a-z0-9_-]{1,32}$")]
     private static partial Regex SiteNameRegex();
 
-    /// <summary>Every command answer is private to the admin who ran it and never pings anyone.</summary>
+    /// <summary>Every command answer is private to the admin who ran it, never pings anyone, and fits in one message.</summary>
     public static Task Say(this InteractionModuleBase<SocketInteractionContext> module, string text) =>
-        module.Context.Interaction.RespondAsync(text, ephemeral: true, allowedMentions: AllowedMentions.None);
+        module.Context.Interaction.RespondAsync(Limits.FitMessage(text), ephemeral: true, allowedMentions: AllowedMentions.None);
 
     public static bool IsValidSiteName(string name) => SiteNameRegex().IsMatch(name);
 
@@ -37,8 +37,14 @@ internal static partial class CommandHelpers
     public static bool IsValidParamName(string name) =>
         name.Length is > 0 and <= 64 && name.All(c => !char.IsWhiteSpace(c) && c is not ('&' or '=' or '#' or '?'));
 
-    public static bool IsValidRegex(string pattern)
+    public static readonly string InvalidRegex = $"That isn't a valid regex ({Limits.RegexLength} characters max).";
+
+    public static string ListFull(int max) => $"That list is full ({max} entries max). Remove one first.";
+
+    public static bool IsValidRegex(string? pattern)
     {
+        if (pattern is not { Length: > 0 and <= Limits.RegexLength })
+            return false;
         try
         {
             _ = new Regex(pattern, RegexOptions.None, TimeSpan.FromMilliseconds(100));

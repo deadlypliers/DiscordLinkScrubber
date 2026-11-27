@@ -16,7 +16,6 @@ public sealed class MessageHandler(
     IMemoryCache cache,
     ILogger<MessageHandler> log)
 {
-    private const int MaxMessageLength = 2000;
     private const string OptOutHint = " · No pings: /linkcleaner-pings off";
     private static readonly TimeSpan DedupeWindow = TimeSpan.FromHours(6);
 
@@ -48,7 +47,7 @@ public sealed class MessageHandler(
         if (!hasFiles)
         {
             var replacement = $"From {mention}:\n{processed.RewrittenContent}\n{footer}";
-            if (replacement.Length <= MaxMessageLength)
+            if (replacement.Length <= Limits.MessageLength)
                 return (replacement, true);
         }
 
@@ -241,9 +240,7 @@ public sealed class MessageHandler(
         if (config.ModLogChannelId is not { } channelId || client.GetChannel(channelId) is not IMessageChannel modLog)
             return;
 
-        var text = $"{title} — {msg.Author.Mention} (`{msg.Author.Id}`) in <#{msg.Channel.Id}>\n{string.Join('\n', lines)}";
-        if (text.Length > MaxMessageLength)
-            text = text[..(MaxMessageLength - 1)] + "…";
+        var text = Limits.FitMessage($"{title} — {msg.Author.Mention} (`{msg.Author.Id}`) in <#{msg.Channel.Id}>\n{string.Join('\n', lines)}");
 
         try
         {

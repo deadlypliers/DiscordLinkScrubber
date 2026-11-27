@@ -51,7 +51,7 @@ public static class ConfigTransfer
             return Fail("The info link isn't an http(s) URL.", out error);
         if (!Enum.IsDefined(parsed.Enforcement))
             return Fail("The enforcement level is invalid.", out error);
-        if (parsed.MirrorPrefix.Length > 16)
+        if (parsed.MirrorPrefix.Length > Limits.MirrorPrefixLength)
             return Fail("The mirror prefix is too long.", out error);
         if (!ValidParams(parsed.Global.StripParams))
             return Fail("The server-wide parameter list is invalid.", out error);
@@ -67,17 +67,17 @@ public static class ConfigTransfer
                 return Fail($"Site `{site.Name}` appears twice.", out error);
             if (site.Hosts is null || site.StripParams is null || site.StripPathPatterns is null)
                 return Fail($"Site `{site.Name}` is missing fields.", out error);
-            if (site.Hosts.Count > 50 || !site.Hosts.All(IsBareHost))
+            if (site.Hosts.Count > Limits.HostsPerSite || !site.Hosts.All(IsBareHost))
                 return Fail($"Site `{site.Name}` has an invalid host list.", out error);
             if (!ValidParams(site.StripParams))
                 return Fail($"Site `{site.Name}` has an invalid parameter list.", out error);
             if (site.TidyParams is null || !ValidParams(site.TidyParams))
                 return Fail($"Site `{site.Name}` has an invalid tidy parameter list.", out error);
-            if (site.StripPathPatterns.Count > 20 || !site.StripPathPatterns.All(ValidRegex))
+            if (site.StripPathPatterns.Count > Limits.PathPatternsPerSite || !site.StripPathPatterns.All(CommandHelpers.IsValidRegex))
                 return Fail($"Site `{site.Name}` has an invalid path pattern.", out error);
             if (site.MirrorHost is not null && !IsBareHost(site.MirrorHost))
                 return Fail($"Site `{site.Name}` has an invalid mirror host.", out error);
-            if (site.MirrorPathPattern is not null && !ValidRegex(site.MirrorPathPattern))
+            if (site.MirrorPathPattern is not null && !CommandHelpers.IsValidRegex(site.MirrorPathPattern))
                 return Fail($"Site `{site.Name}` has an invalid mirror path pattern.", out error);
             if (site.DefaultRevision < 0 || site.DefaultRevision > DefaultSites.Revision)
                 return Fail($"Site `{site.Name}` has an invalid revision.", out error);
@@ -95,13 +95,10 @@ public static class ConfigTransfer
     }
 
     private static bool ValidParams(IReadOnlyList<string> values) =>
-        values.Count <= 200 && values.All(v => v is not null && CommandHelpers.IsValidParamName(v));
+        values.Count <= Limits.EntriesPerList && values.All(v => v is not null && CommandHelpers.IsValidParamName(v));
 
     private static bool ValidGenericValues(IReadOnlyList<string> values) =>
-        values.Count <= 200 && values.All(CommandHelpers.IsValidGenericValue);
-
-    private static bool ValidRegex(string pattern) =>
-        pattern is { Length: > 0 and <= 200 } && CommandHelpers.IsValidRegex(pattern);
+        values.Count <= Limits.EntriesPerList && values.All(CommandHelpers.IsValidGenericValue);
 
     /// <summary>A plain hostname, exactly as the host commands would store it.</summary>
     private static bool IsBareHost(string host) =>

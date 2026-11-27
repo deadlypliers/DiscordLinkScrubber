@@ -102,7 +102,7 @@ public sealed class BotService(
         log.LogWarning("Command {Command} failed: {Error} {Reason}", command.Name, result.Error, result.ErrorReason);
         try
         {
-            var message = $"That didn't work: {result.ErrorReason}";
+            var message = Limits.FitMessage($"That didn't work: {result.ErrorReason}");
             if (context.Interaction.HasResponded)
                 await context.Interaction.FollowupAsync(message, ephemeral: true);
             else
