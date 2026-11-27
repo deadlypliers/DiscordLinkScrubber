@@ -44,7 +44,8 @@ A ready-to-paste explanation for your rules channel, including what the bot does
   and other users inside their text stay silent, and mirror replies never ping anyone. When a repost does
   ping, its footer explains how to opt out.
 - Messages with attachments or stickers are not deleted. The bot replies with the clean links instead.
-- Edits that add a link are handled like new messages.
+- Edits that add a link are handled like new messages, for messages posted in the last 6 hours. Edits to older
+  messages are ignored, so an old message is never moved to the bottom of the channel.
 - The bot ignores other bots and webhooks.
 - The repost is always sent **before** the original is deleted, and the original is never deleted if the
   repost fails.

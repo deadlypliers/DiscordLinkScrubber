@@ -565,6 +565,25 @@ public sealed class BotTests : IDisposable
     }
 
     [Fact]
+    public void Imported_info_link_is_normalised_like_the_command_does()
+    {
+        var json = Bundle(j => j.Replace(ConfigStore.DefaultInfoLink, "https://example.com/a b>c"));
+
+        Assert.True(ConfigTransfer.TryParse(json, out var bundle, out var error), error);
+        Assert.Equal("https://example.com/a%20b%3Ec", bundle.InfoLink);
+    }
+
+    [Fact]
+    public void Only_edits_to_recent_messages_are_handled()
+    {
+        var posted = new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero);
+
+        Assert.True(MessageHandler.IsRecentEdit(posted, posted.AddMinutes(1)));
+        Assert.True(MessageHandler.IsRecentEdit(posted, posted.AddHours(6)));
+        Assert.False(MessageHandler.IsRecentEdit(posted, posted.AddHours(6).AddSeconds(1)));
+    }
+
+    [Fact]
     public void Long_text_is_cut_to_one_discord_message()
     {
         Assert.Equal("short", Limits.FitMessage("short"));

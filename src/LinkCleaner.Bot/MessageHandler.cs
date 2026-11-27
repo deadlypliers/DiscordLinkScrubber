@@ -62,15 +62,22 @@ public sealed class MessageHandler(
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// Updates also fire when embeds load. There is no message cache to compare against, so repeats are
+    /// caught by the per-message dedupe instead.
+    /// </summary>
     public Task OnMessageUpdated(Cacheable<IMessage, ulong> before, SocketMessage after, ISocketMessageChannel channel)
     {
-        // Discord also fires updates when embeds resolve: only react when the text itself changed.
-        if (before.HasValue && before.Value.Content == after.Content)
-            return Task.CompletedTask;
-
-        _ = RunAsync(after);
+        if (IsRecentEdit(SnowflakeUtils.FromSnowflake(after.Id), DateTimeOffset.UtcNow))
+            _ = RunAsync(after);
         return Task.CompletedTask;
     }
+
+    /// <summary>
+    /// Only messages posted within the dedupe window are acted on when edited. Reposting an older one would
+    /// move it to the bottom of the channel, and the dedupe would no longer stop a second repost.
+    /// </summary>
+    public static bool IsRecentEdit(DateTimeOffset postedAt, DateTimeOffset now) => now - postedAt <= DedupeWindow;
 
     private async Task RunAsync(SocketMessage message)
     {

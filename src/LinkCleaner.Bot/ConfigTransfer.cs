@@ -84,7 +84,8 @@ public static class ConfigTransfer
         }
 
         error = "";
-        bundle = parsed;
+        // Stored exactly as /linkcleaner infolink stores it, so it can't break the link markup in reposts.
+        bundle = parsed with { InfoLink = info.AbsoluteUri };
         return true;
     }
 
