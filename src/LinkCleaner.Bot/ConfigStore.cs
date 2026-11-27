@@ -24,6 +24,8 @@ public sealed class ConfigStore
     public const string GlobalEnabledKey = "global_enabled";
     public const string GlobalParamsKey = "global_params";
     public const string GenericValuesKey = "global_generic_values";
+    public const string DefaultsRevisionKey = "defaults_revision";
+    private const string SeededKey = "seeded";
 
     public const string IncludeKind = "include";
     public const string ExcludeKind = "exclude";
@@ -81,29 +83,26 @@ public sealed class ConfigStore
     // ---- Sites -------------------------------------------------------------------------
 
     /// <param name="customises">True for admin edits (built-in updates then leave the site alone). Enable/disable and reset pass false.</param>
-    public void SaveSite(ulong guildId, SiteRule rule, bool customises = true) => Mutate(guildId, c =>
+    public void SaveSite(ulong guildId, SiteRule rule, bool customises = true) => Mutate(guildId, (c, g) =>
     {
-        var stored = customises ? rule with { Customised = true } : rule;
-        Exec(c, "INSERT OR REPLACE INTO sites (guild_id, name, json) VALUES ($g, $n, $j)",
-            ("$g", (long)guildId), ("$n", rule.Name), ("$j", JsonSerializer.Serialize(stored)));
-        Exec(c, "DELETE FROM deleted_defaults WHERE guild_id = $g AND name = $n", ("$g", (long)guildId), ("$n", rule.Name));
+        PutSite(c, g, customises ? rule with { Customised = true } : rule);
+        UnmarkDeleted(c, g, rule.Name);
     });
 
-    public void DeleteSite(ulong guildId, string name) => Mutate(guildId, c =>
+    public void DeleteSite(ulong guildId, string name) => Mutate(guildId, (c, g) =>
     {
-        Exec(c, "DELETE FROM sites WHERE guild_id = $g AND name = $n", ("$g", (long)guildId), ("$n", name));
+        Exec(c, "DELETE FROM sites WHERE guild_id = $g AND name = $n", ("$g", g), ("$n", name));
         // Remember deleted built-ins so a later default update doesn't bring them back.
         if (DefaultSites.Create().Any(s => s.Name == name))
-            Exec(c, "INSERT OR IGNORE INTO deleted_defaults (guild_id, name) VALUES ($g, $n)", ("$g", (long)guildId), ("$n", name));
+            MarkDeleted(c, g, name);
     });
 
     /// <summary>
     /// Applies a validated import in one transaction. Sites are merged by name (the file wins), or with
     /// <paramref name="replace"/> the server's sites become exactly the file's. Server-wide settings always come from the file.
     /// </summary>
-    public void ImportBundle(ulong guildId, ConfigBundle bundle, bool replace) => Mutate(guildId, c =>
+    public void ImportBundle(ulong guildId, ConfigBundle bundle, bool replace) => Mutate(guildId, (c, g) =>
     {
-        var g = (long)guildId;
         using var tx = c.BeginTransaction();
 
         if (replace)
@@ -114,30 +113,21 @@ public sealed class ConfigStore
 
         foreach (var site in bundle.Sites)
         {
-            Exec(c, "INSERT OR REPLACE INTO sites (guild_id, name, json) VALUES ($g, $n, $j)",
-                ("$g", g), ("$n", site.Name), ("$j", JsonSerializer.Serialize(site)));
-            Exec(c, "DELETE FROM deleted_defaults WHERE guild_id = $g AND name = $n", ("$g", g), ("$n", site.Name));
+            PutSite(c, g, site);
+            UnmarkDeleted(c, g, site.Name);
         }
 
         if (replace)
             foreach (var def in DefaultSites.Create().Where(d => bundle.Sites.All(s => s.Name != d.Name)))
-                Exec(c, "INSERT OR IGNORE INTO deleted_defaults (guild_id, name) VALUES ($g, $n)", ("$g", g), ("$n", def.Name));
+                MarkDeleted(c, g, def.Name);
 
-        void Put(string key, string value) => Exec(c, "INSERT OR REPLACE INTO settings (guild_id, key, value) VALUES ($g, $k, $v)",
-            ("$g", g), ("$k", key), ("$v", value));
-        Put(InfoLinkKey, bundle.InfoLink);
-        Put(MirrorPrefixKey, bundle.MirrorPrefix);
-        Put(PingAuthorKey, bundle.PingAuthor ? "1" : "0");
-        Put(GlobalEnabledKey, bundle.Global.Enabled ? "1" : "0");
-        if (bundle.Enforcement == Enforcement.IncludeCosmetic)
-            Put(EnforcementKey, "cosmetic");
-        else
-            Exec(c, "DELETE FROM settings WHERE guild_id = $g AND key = $k", ("$g", g), ("$k", EnforcementKey));
-        Put(GlobalParamsKey, JsonSerializer.Serialize(bundle.Global.StripParams));
-        if (bundle.Global.GenericValues is { } generic)
-            Put(GenericValuesKey, JsonSerializer.Serialize(generic));
-        else
-            Exec(c, "DELETE FROM settings WHERE guild_id = $g AND key = $k", ("$g", g), ("$k", GenericValuesKey));
+        WriteSetting(c, g, InfoLinkKey, bundle.InfoLink);
+        WriteSetting(c, g, MirrorPrefixKey, bundle.MirrorPrefix);
+        WriteSetting(c, g, PingAuthorKey, bundle.PingAuthor ? "1" : "0");
+        WriteSetting(c, g, GlobalEnabledKey, bundle.Global.Enabled ? "1" : "0");
+        WriteSetting(c, g, EnforcementKey, bundle.Enforcement == Enforcement.IncludeCosmetic ? "cosmetic" : null);
+        WriteSetting(c, g, GlobalParamsKey, JsonSerializer.Serialize(bundle.Global.StripParams));
+        WriteSetting(c, g, GenericValuesKey, bundle.Global.GenericValues is { } generic ? JsonSerializer.Serialize(generic) : null);
 
         tx.Commit();
     });
@@ -145,149 +135,42 @@ public sealed class ConfigStore
     // ---- Settings ----------------------------------------------------------------------
 
     /// <summary>Sets a setting; null removes it so the default applies again.</summary>
-    public void SetSetting(ulong guildId, string key, string? value) => Mutate(guildId, c =>
-    {
-        if (value is null)
-            Exec(c, "DELETE FROM settings WHERE guild_id = $g AND key = $k", ("$g", (long)guildId), ("$k", key));
-        else
-            Exec(c, "INSERT OR REPLACE INTO settings (guild_id, key, value) VALUES ($g, $k, $v)",
-                ("$g", (long)guildId), ("$k", key), ("$v", value));
-    });
+    public void SetSetting(ulong guildId, string key, string? value) =>
+        Mutate(guildId, (c, g) => WriteSetting(c, g, key, value));
 
-    // ---- Channels and roles ------------------------------------------------------------
+    /// <summary>Replaces the allowlist of generic utm values; null restores the default.</summary>
+    public void SetGenericValues(ulong guildId, IReadOnlyList<string>? values) =>
+        SetSetting(guildId, GenericValuesKey, values is null ? null : JsonSerializer.Serialize(values));
 
-    public void SetChannelFilter(ulong guildId, ulong channelId, string kind) => Mutate(guildId, c =>
+    /// <summary>Replaces the server-wide strip list; null restores the default.</summary>
+    public void SetGlobalParams(ulong guildId, IReadOnlyList<string>? parameters) =>
+        SetSetting(guildId, GlobalParamsKey, parameters is null ? null : JsonSerializer.Serialize(parameters));
+
+    // ---- Channels, roles and ping opt-outs ---------------------------------------------
+
+    public void SetChannelFilter(ulong guildId, ulong channelId, string kind) => Mutate(guildId, (c, g) =>
         Exec(c, "INSERT OR REPLACE INTO channel_filters (guild_id, channel_id, kind) VALUES ($g, $c, $k)",
-            ("$g", (long)guildId), ("$c", (long)channelId), ("$k", kind)));
+            ("$g", g), ("$c", (long)channelId), ("$k", kind)));
 
-    public void RemoveChannelFilter(ulong guildId, ulong channelId) => Mutate(guildId, c =>
-        Exec(c, "DELETE FROM channel_filters WHERE guild_id = $g AND channel_id = $c",
-            ("$g", (long)guildId), ("$c", (long)channelId)));
+    public void RemoveChannelFilter(ulong guildId, ulong channelId) => Mutate(guildId, (c, g) =>
+        Exec(c, "DELETE FROM channel_filters WHERE guild_id = $g AND channel_id = $c", ("$g", g), ("$c", (long)channelId)));
 
-    public void ClearChannelFilters(ulong guildId) => Mutate(guildId, c =>
-        Exec(c, "DELETE FROM channel_filters WHERE guild_id = $g", ("$g", (long)guildId)));
+    public void ClearChannelFilters(ulong guildId) => Mutate(guildId, (c, g) =>
+        Exec(c, "DELETE FROM channel_filters WHERE guild_id = $g", ("$g", g)));
 
-    public void AddExemptRole(ulong guildId, ulong roleId) => Mutate(guildId, c =>
-        Exec(c, "INSERT OR IGNORE INTO exempt_roles (guild_id, role_id) VALUES ($g, $r)",
-            ("$g", (long)guildId), ("$r", (long)roleId)));
+    public void AddExemptRole(ulong guildId, ulong roleId) => Mutate(guildId, (c, g) =>
+        Exec(c, "INSERT OR IGNORE INTO exempt_roles (guild_id, role_id) VALUES ($g, $r)", ("$g", g), ("$r", (long)roleId)));
 
-    public void RemoveExemptRole(ulong guildId, ulong roleId) => Mutate(guildId, c =>
-        Exec(c, "DELETE FROM exempt_roles WHERE guild_id = $g AND role_id = $r",
-            ("$g", (long)guildId), ("$r", (long)roleId)));
+    public void RemoveExemptRole(ulong guildId, ulong roleId) => Mutate(guildId, (c, g) =>
+        Exec(c, "DELETE FROM exempt_roles WHERE guild_id = $g AND role_id = $r", ("$g", g), ("$r", (long)roleId)));
 
-    public void AddPingOptOut(ulong guildId, ulong userId) => Mutate(guildId, c =>
-        Exec(c, "INSERT OR IGNORE INTO ping_optouts (guild_id, user_id) VALUES ($g, $u)",
-            ("$g", (long)guildId), ("$u", (long)userId)));
+    public void AddPingOptOut(ulong guildId, ulong userId) => Mutate(guildId, (c, g) =>
+        Exec(c, "INSERT OR IGNORE INTO ping_optouts (guild_id, user_id) VALUES ($g, $u)", ("$g", g), ("$u", (long)userId)));
 
-    public void RemovePingOptOut(ulong guildId, ulong userId) => Mutate(guildId, c =>
-        Exec(c, "DELETE FROM ping_optouts WHERE guild_id = $g AND user_id = $u",
-            ("$g", (long)guildId), ("$u", (long)userId)));
+    public void RemovePingOptOut(ulong guildId, ulong userId) => Mutate(guildId, (c, g) =>
+        Exec(c, "DELETE FROM ping_optouts WHERE guild_id = $g AND user_id = $u", ("$g", g), ("$u", (long)userId)));
 
-    // ---- Internals ---------------------------------------------------------------------
-
-    private SqliteConnection Open()
-    {
-        var c = new SqliteConnection(_connectionString);
-        c.Open();
-        return c;
-    }
-
-    private void Mutate(ulong guildId, Action<SqliteConnection> write)
-    {
-        lock (_gate)
-        {
-            using var c = Open();
-            EnsureSeeded(c, guildId);
-            write(c);
-            _cache.TryRemove(guildId, out _);
-        }
-    }
-
-    public const string DefaultsRevisionKey = "defaults_revision";
-
-    /// <summary>
-    /// Copies the default sites into a guild the first time it is seen, and rolls later default
-    /// revisions out to it (once per revision). Deleted built-ins stay deleted; edited sites are untouched.
-    /// </summary>
-    private static void EnsureSeeded(SqliteConnection c, ulong guildId)
-    {
-        var g = (long)guildId;
-        var seeded = Scalar(c, "SELECT 1 FROM settings WHERE guild_id = $g AND key = 'seeded'", ("$g", g)) is not null;
-        var revision = Scalar(c, "SELECT value FROM settings WHERE guild_id = $g AND key = $k", ("$g", g), ("$k", DefaultsRevisionKey))
-            is string text && int.TryParse(text, out var parsed) ? parsed : 0;
-        if (seeded && revision >= DefaultSites.Revision)
-            return;
-
-        using var tx = c.BeginTransaction();
-        if (!seeded)
-            foreach (var rule in DefaultSites.Create())
-                Exec(c, "INSERT OR IGNORE INTO sites (guild_id, name, json) VALUES ($g, $n, $j)",
-                    ("$g", g), ("$n", rule.Name), ("$j", JsonSerializer.Serialize(rule)));
-        else
-            ApplyDefaultUpdates(c, g, legacy: revision == 0);
-
-        Exec(c, "INSERT OR REPLACE INTO settings (guild_id, key, value) VALUES ($g, 'seeded', '1')", ("$g", g));
-        Exec(c, "INSERT OR REPLACE INTO settings (guild_id, key, value) VALUES ($g, $k, $v)",
-            ("$g", g), ("$k", DefaultsRevisionKey), ("$v", DefaultSites.Revision.ToString()));
-        tx.Commit();
-    }
-
-    /// <param name="legacy">The guild was seeded before revisions existed, so a missing original built-in was deleted by an admin.</param>
-    private static void ApplyDefaultUpdates(SqliteConnection c, long g, bool legacy)
-    {
-        var stored = Query(c, "SELECT json FROM sites WHERE guild_id = $g", r => r.GetString(0), ("$g", g))
-            .Select(j => JsonSerializer.Deserialize<SiteRule>(j)!)
-            .ToDictionary(s => s.Name);
-        var deleted = Query(c, "SELECT name FROM deleted_defaults WHERE guild_id = $g", r => r.GetString(0), ("$g", g)).ToHashSet();
-
-        void Save(SiteRule rule) => Exec(c, "INSERT OR REPLACE INTO sites (guild_id, name, json) VALUES ($g, $n, $j)",
-            ("$g", g), ("$n", rule.Name), ("$j", JsonSerializer.Serialize(rule)));
-
-        foreach (var def in DefaultSites.Create())
-        {
-            if (!stored.TryGetValue(def.Name, out var current))
-            {
-                if (legacy && DefaultSites.OriginalNames.Contains(def.Name))
-                    Exec(c, "INSERT OR IGNORE INTO deleted_defaults (guild_id, name) VALUES ($g, $n)", ("$g", g), ("$n", def.Name));
-                else if (!deleted.Contains(def.Name))
-                    Save(def);
-                continue;
-            }
-
-            if (current.Customised)
-                continue;
-
-            // A row stored before revisions existed counts as unedited only if it is a known earlier default.
-            if (current.DefaultRevision == 0 && !MatchesEarlierDefault(current, def))
-            {
-                Save(current with { Customised = true });
-                continue;
-            }
-
-            Save(def with { Enabled = current.Enabled });
-        }
-    }
-
-    /// <summary>
-    /// Revision 1 equals today's definition of the original sites, except YouTube then lacked "is" and
-    /// every param lived in one list (today's StripParams followed by TidyParams, in either order of the split).
-    /// </summary>
-    private static bool MatchesEarlierDefault(SiteRule stored, SiteRule current)
-    {
-        static bool Same(SiteRule a, SiteRule b) =>
-            a.Hosts.SequenceEqual(b.Hosts) &&
-            // Revisions 1-2 also listed utm_* per site; it is now the (value-aware) server-wide rule's job.
-            a.StripParams.Where(p => p != "utm_*").Order().SequenceEqual(b.StripParams.Concat(b.TidyParams).Order()) &&
-            a.StripPathPatterns.SequenceEqual(b.StripPathPatterns) &&
-            a.MirrorHost == b.MirrorHost && a.MirrorPathPattern == b.MirrorPathPattern;
-
-        return Same(stored, current) ||
-               Same(stored, current with
-               {
-                   StripParams = current.StripParams.Where(p => p != "is").ToList(),
-                   TidyParams = current.TidyParams.Where(p => p != "is").ToList(),
-               });
-    }
+    // ---- Loading -----------------------------------------------------------------------
 
     /// <summary>Caller holds <see cref="_gate"/>.</summary>
     private GuildConfig Load(ulong guildId)
@@ -347,39 +230,152 @@ public sealed class ConfigStore
         return new GlobalRule(enabled, parameters, generic);
     }
 
-    /// <summary>Replaces the allowlist of generic utm values; null restores the default.</summary>
-    public void SetGenericValues(ulong guildId, IReadOnlyList<string>? values) =>
-        SetSetting(guildId, GenericValuesKey, values is null ? null : JsonSerializer.Serialize(values));
+    // ---- Default sites -----------------------------------------------------------------
 
-    /// <summary>Replaces the server-wide strip list; null restores the default.</summary>
-    public void SetGlobalParams(ulong guildId, IReadOnlyList<string>? parameters) =>
-        SetSetting(guildId, GlobalParamsKey, parameters is null ? null : JsonSerializer.Serialize(parameters));
-
-    private static void Exec(SqliteConnection c, string sql, params (string Name, object? Value)[] args)
+    /// <summary>
+    /// Copies the default sites into a guild the first time it is seen, and rolls later default
+    /// revisions out to it (once per revision). Deleted built-ins stay deleted; edited sites are untouched.
+    /// </summary>
+    private static void EnsureSeeded(SqliteConnection c, ulong guildId)
     {
-        using var cmd = c.CreateCommand();
+        var g = (long)guildId;
+        var seeded = Scalar(c, "SELECT 1 FROM settings WHERE guild_id = $g AND key = $k", ("$g", g), ("$k", SeededKey)) is not null;
+        var revision = Scalar(c, "SELECT value FROM settings WHERE guild_id = $g AND key = $k", ("$g", g), ("$k", DefaultsRevisionKey))
+            is string text && int.TryParse(text, out var parsed) ? parsed : 0;
+        if (seeded && revision >= DefaultSites.Revision)
+            return;
+
+        using var tx = c.BeginTransaction();
+        if (!seeded)
+            foreach (var rule in DefaultSites.Create())
+                PutSite(c, g, rule, keepExisting: true);
+        else
+            ApplyDefaultUpdates(c, g, legacy: revision == 0);
+
+        WriteSetting(c, g, SeededKey, "1");
+        WriteSetting(c, g, DefaultsRevisionKey, DefaultSites.Revision.ToString());
+        tx.Commit();
+    }
+
+    /// <param name="legacy">The guild was seeded before revisions existed, so a missing original built-in was deleted by an admin.</param>
+    private static void ApplyDefaultUpdates(SqliteConnection c, long g, bool legacy)
+    {
+        var stored = Query(c, "SELECT json FROM sites WHERE guild_id = $g", r => r.GetString(0), ("$g", g))
+            .Select(j => JsonSerializer.Deserialize<SiteRule>(j)!)
+            .ToDictionary(s => s.Name);
+        var deleted = Query(c, "SELECT name FROM deleted_defaults WHERE guild_id = $g", r => r.GetString(0), ("$g", g)).ToHashSet();
+
+        foreach (var def in DefaultSites.Create())
+        {
+            if (!stored.TryGetValue(def.Name, out var current))
+            {
+                if (legacy && DefaultSites.OriginalNames.Contains(def.Name))
+                    MarkDeleted(c, g, def.Name);
+                else if (!deleted.Contains(def.Name))
+                    PutSite(c, g, def);
+                continue;
+            }
+
+            if (current.Customised)
+                continue;
+
+            // A row stored before revisions existed counts as unedited only if it is a known earlier default.
+            if (current.DefaultRevision == 0 && !MatchesEarlierDefault(current, def))
+            {
+                PutSite(c, g, current with { Customised = true });
+                continue;
+            }
+
+            PutSite(c, g, def with { Enabled = current.Enabled });
+        }
+    }
+
+    /// <summary>
+    /// Revision 1 equals today's definition of the original sites, except YouTube then lacked "is" and
+    /// every param lived in one list (today's StripParams followed by TidyParams, in either order of the split).
+    /// </summary>
+    private static bool MatchesEarlierDefault(SiteRule stored, SiteRule current)
+    {
+        static bool Same(SiteRule a, SiteRule b) =>
+            a.Hosts.SequenceEqual(b.Hosts) &&
+            // Revisions 1-2 also listed utm_* per site; it is now the (value-aware) server-wide rule's job.
+            a.StripParams.Where(p => p != "utm_*").Order().SequenceEqual(b.StripParams.Concat(b.TidyParams).Order()) &&
+            a.StripPathPatterns.SequenceEqual(b.StripPathPatterns) &&
+            a.MirrorHost == b.MirrorHost && a.MirrorPathPattern == b.MirrorPathPattern;
+
+        return Same(stored, current) ||
+               Same(stored, current with
+               {
+                   StripParams = current.StripParams.Where(p => p != "is").ToList(),
+                   TidyParams = current.TidyParams.Where(p => p != "is").ToList(),
+               });
+    }
+
+    // ---- SQL ---------------------------------------------------------------------------
+
+    private SqliteConnection Open()
+    {
+        var c = new SqliteConnection(_connectionString);
+        c.Open();
+        return c;
+    }
+
+    private void Mutate(ulong guildId, Action<SqliteConnection, long> write)
+    {
+        lock (_gate)
+        {
+            using var c = Open();
+            EnsureSeeded(c, guildId);
+            write(c, (long)guildId);
+            _cache.TryRemove(guildId, out _);
+        }
+    }
+
+    /// <param name="keepExisting">True to leave a stored row of the same name alone instead of replacing it.</param>
+    private static void PutSite(SqliteConnection c, long g, SiteRule rule, bool keepExisting = false) =>
+        Exec(c, $"INSERT OR {(keepExisting ? "IGNORE" : "REPLACE")} INTO sites (guild_id, name, json) VALUES ($g, $n, $j)",
+            ("$g", g), ("$n", rule.Name), ("$j", JsonSerializer.Serialize(rule)));
+
+    private static void MarkDeleted(SqliteConnection c, long g, string name) =>
+        Exec(c, "INSERT OR IGNORE INTO deleted_defaults (guild_id, name) VALUES ($g, $n)", ("$g", g), ("$n", name));
+
+    private static void UnmarkDeleted(SqliteConnection c, long g, string name) =>
+        Exec(c, "DELETE FROM deleted_defaults WHERE guild_id = $g AND name = $n", ("$g", g), ("$n", name));
+
+    /// <summary>Null removes the setting so its default applies.</summary>
+    private static void WriteSetting(SqliteConnection c, long g, string key, string? value)
+    {
+        if (value is null)
+            Exec(c, "DELETE FROM settings WHERE guild_id = $g AND key = $k", ("$g", g), ("$k", key));
+        else
+            Exec(c, "INSERT OR REPLACE INTO settings (guild_id, key, value) VALUES ($g, $k, $v)", ("$g", g), ("$k", key), ("$v", value));
+    }
+
+    private static SqliteCommand Command(SqliteConnection c, string sql, (string Name, object? Value)[] args)
+    {
+        var cmd = c.CreateCommand();
         cmd.CommandText = sql;
         foreach (var (name, value) in args)
             cmd.Parameters.AddWithValue(name, value ?? DBNull.Value);
+        return cmd;
+    }
+
+    private static void Exec(SqliteConnection c, string sql, params (string Name, object? Value)[] args)
+    {
+        using var cmd = Command(c, sql, args);
         cmd.ExecuteNonQuery();
     }
 
     private static object? Scalar(SqliteConnection c, string sql, params (string Name, object? Value)[] args)
     {
-        using var cmd = c.CreateCommand();
-        cmd.CommandText = sql;
-        foreach (var (name, value) in args)
-            cmd.Parameters.AddWithValue(name, value ?? DBNull.Value);
+        using var cmd = Command(c, sql, args);
         return cmd.ExecuteScalar();
     }
 
     private static List<T> Query<T>(SqliteConnection c, string sql, Func<SqliteDataReader, T> map,
         params (string Name, object? Value)[] args)
     {
-        using var cmd = c.CreateCommand();
-        cmd.CommandText = sql;
-        foreach (var (name, value) in args)
-            cmd.Parameters.AddWithValue(name, value ?? DBNull.Value);
+        using var cmd = Command(c, sql, args);
         using var reader = cmd.ExecuteReader();
         var rows = new List<T>();
         while (reader.Read())

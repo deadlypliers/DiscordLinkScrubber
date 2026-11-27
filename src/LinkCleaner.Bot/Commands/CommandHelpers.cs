@@ -38,6 +38,8 @@ internal static partial class CommandHelpers
         name.Length is > 0 and <= 64 && name.All(c => !char.IsWhiteSpace(c) && c is not ('&' or '=' or '#' or '?'));
 
     public static readonly string InvalidRegex = $"That isn't a valid regex ({Limits.RegexLength} characters max).";
+    public const string InvalidHost = "That doesn't look like a hostname.";
+    public const string InvalidParam = "That isn't a valid parameter name.";
 
     public static string ListFull(int max) => $"That list is full ({max} entries max). Remove one first.";
 
@@ -81,6 +83,29 @@ internal static partial class CommandHelpers
         var list = values.Select(v => $"`{v}`").ToList();
         return list.Count == 0 ? "_none_" : string.Join(", ", list);
     }
+
+    /// <summary>The list without <paramref name="value"/>, or null if it wasn't on it.</summary>
+    public static IReadOnlyList<string>? Without(IReadOnlyList<string> list, string value, StringComparer? comparer = null)
+    {
+        comparer ??= StringComparer.Ordinal;
+        var remaining = list.Where(v => !comparer.Equals(v, value)).ToList();
+        return remaining.Count == list.Count ? null : remaining;
+    }
+}
+
+/// <summary>Base for command groups that act on one named site.</summary>
+public abstract class SiteCommandModule(ConfigStore store) : InteractionModuleBase<SocketInteractionContext>
+{
+    protected ConfigStore Store => store;
+
+    protected SiteRule? Find(string site) => Store.Get(Context.Guild.Id).Sites.FirstOrDefault(s => s.Name == site);
+
+    /// <summary>Runs <paramref name="action"/> with the named site, or tells the admin there is no such site.</summary>
+    protected Task WithSite(string site, Func<SiteRule, Task> action) =>
+        Find(site) is { } rule ? action(rule) : this.Say($"No site named `{site}`.");
+
+    /// <param name="customises">False for toggles and resets, which keep the site receiving built-in updates.</param>
+    protected void Save(SiteRule rule, bool customises = true) => Store.SaveSite(Context.Guild.Id, rule, customises);
 }
 
 /// <summary>Suggests the server's site names while an admin types a command.</summary>
