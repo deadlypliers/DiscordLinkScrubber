@@ -15,6 +15,18 @@ public sealed class BotTests : IDisposable
 
     private ConfigStore NewStore() => new(Path.Combine(_dir, "test.db"));
 
+    private ProcessedMessage Process(string content)
+    {
+        var cfg = NewStore().Get(Guild);
+        return LinkProcessor.Process(content, cfg.Sites, cfg.GlobalRule, cfg.Enforcement);
+    }
+
+    /// <summary>True if a file with these sites and server-wide rule passes import validation.</summary>
+    private static bool Imports(GlobalRule global, params SiteRule[] sites) => ConfigTransfer.TryParse(
+        System.Text.Json.JsonSerializer.Serialize(
+            new ConfigBundle(ConfigTransfer.FormatVersion, sites, global, ConfigStore.DefaultInfoLink, "🪞", true)),
+        out _, out _);
+
     public void Dispose()
     {
         Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
@@ -26,7 +38,7 @@ public sealed class BotTests : IDisposable
     {
         var cfg = NewStore().Get(Guild);
 
-        Assert.Equal(DefaultSites.Create().Select(s => s.Name).Order(), cfg.Sites.Select(s => s.Name).Order());
+        Assert.Equal(DefaultSites.All.Select(s => s.Name).Order(), cfg.Sites.Select(s => s.Name).Order());
         Assert.Equal(ConfigStore.DefaultInfoLink, cfg.InfoLink);
         Assert.Equal(ConfigStore.DefaultMirrorPrefix, cfg.MirrorPrefix);
         Assert.Null(cfg.ModLogChannelId);
@@ -115,17 +127,17 @@ public sealed class BotTests : IDisposable
     }
 
     [Fact]
-    public void Pinging_the_poster_defaults_on_and_the_setting_persists()
+    public void Pinging_the_poster_defaults_off_and_the_setting_persists()
     {
         var store = NewStore();
-        Assert.True(store.Get(Guild).PingAuthor);
-
-        store.SetSetting(Guild, ConfigStore.PingAuthorKey, "0");
-        Assert.False(NewStore().Get(Guild).PingAuthor);
+        Assert.False(store.Get(Guild).PingAuthor);
 
         store.SetSetting(Guild, ConfigStore.PingAuthorKey, "1");
         Assert.True(NewStore().Get(Guild).PingAuthor);
-        Assert.True(store.Get(Guild + 1).PingAuthor); // other guilds unaffected
+        Assert.False(store.Get(Guild + 1).PingAuthor); // other guilds unaffected
+
+        store.SetSetting(Guild, ConfigStore.PingAuthorKey, "0");
+        Assert.False(NewStore().Get(Guild).PingAuthor);
     }
 
     [Fact]
@@ -146,7 +158,7 @@ public sealed class BotTests : IDisposable
     [Fact]
     public void Only_the_poster_is_ever_pinged_and_only_when_allowed()
     {
-        var cfg = NewStore().Get(Guild);
+        var cfg = NewStore().Get(Guild) with { PingAuthor = true };
 
         var on = MessageHandler.BuildAllowedMentions(cfg, 42);
         // Discord.Net throws if the Users flag is combined with a UserIds list (this failed live),
@@ -168,6 +180,41 @@ public sealed class BotTests : IDisposable
         Assert.Equal(AllowedMentionTypes.None, MessageHandler.BuildAllowedMentions(optedOut, 42).AllowedTypes ?? AllowedMentionTypes.None);
     }
 
+    [Theory]
+    [InlineData(false, false, true, "From <@42>:\nlook https://youtu.be/abc\n-# [Why did this happen?](<https://info>)")]
+    [InlineData(true, false, true, "From <@42>:\nlook https://youtu.be/abc\n-# [Why did this happen?](<https://info>) · No pings: /linkcleaner-pings off")]
+    [InlineData(false, true, false, "Clean link for <@42>:\nhttps://youtu.be/abc\n-# [Why did this happen?](<https://info>)")]
+    [InlineData(true, true, false, "Clean link for <@42>:\nhttps://youtu.be/abc\n-# [Why did this happen?](<https://info>) · No pings: /linkcleaner-pings off")]
+    public void Repost_text_is_neutral_with_a_small_footer(bool ping, bool hasFiles, bool replaces, string expected)
+    {
+        var processed = Process("look https://youtu.be/abc?si=x");
+
+        var repost = MessageHandler.ComposeRepost("<@42>", processed, "https://info", ping, hasFiles);
+
+        Assert.Equal((expected, replaces), repost);
+    }
+
+    [Fact]
+    public void Over_long_repost_keeps_the_original_and_sends_only_the_links()
+    {
+        var processed = Process(new string('a', 2000) + " https://youtu.be/abc?si=x");
+
+        var (text, replaces) = MessageHandler.ComposeRepost("<@42>", processed, "https://info", ping: false, hasFiles: false);
+
+        Assert.False(replaces);
+        Assert.StartsWith("Clean link for <@42>:\nhttps://youtu.be/abc\n", text);
+    }
+
+    [Fact]
+    public void Kept_original_reply_lists_every_cleaned_link()
+    {
+        var processed = Process("https://youtu.be/abc?si=x and https://youtu.be/def?si=y");
+
+        var (text, _) = MessageHandler.ComposeRepost("<@42>", processed, "https://info", ping: false, hasFiles: true);
+
+        Assert.StartsWith("Clean links for <@42>:\nhttps://youtu.be/abc\nhttps://youtu.be/def\n", text);
+    }
+
     [Fact]
     public void Global_rule_defaults_on_with_utm_and_persists_changes_per_guild()
     {
@@ -185,8 +232,9 @@ public sealed class BotTests : IDisposable
 
         store.SetSetting(Guild, ConfigStore.GlobalEnabledKey, null);
         store.SetGlobalParams(Guild, null);
-        Assert.Equal(GlobalRule.Default, NewStore().Get(Guild).GlobalRule with { StripParams = GlobalRule.Default.StripParams });
-        Assert.Equal(GlobalRule.Default.StripParams, NewStore().Get(Guild).GlobalRule.StripParams);
+        var restored = NewStore().Get(Guild).GlobalRule;
+        Assert.True(restored.Enabled);
+        Assert.Equal(GlobalRule.Default.StripParams, restored.StripParams);
     }
 
     [Fact]
@@ -214,12 +262,10 @@ public sealed class BotTests : IDisposable
         target.ImportBundle(Guild + 1, bundle, replace: true);
         Assert.Equal(["newsletter", "copy-link"], target.Get(Guild + 1).GlobalRule.EffectiveGenericValues);
 
-        bool Valid(GlobalRule g) => ConfigTransfer.TryParse(System.Text.Json.JsonSerializer.Serialize(
-            new ConfigBundle(ConfigTransfer.FormatVersion, [], g, ConfigStore.DefaultInfoLink, "🪞", true)), out _, out _);
-        Assert.True(Valid(GlobalRule.Default));
-        Assert.False(Valid(GlobalRule.Default with { GenericValues = ["has space"] }));
-        Assert.False(Valid(GlobalRule.Default with { GenericValues = [""] }));
-        Assert.False(Valid(GlobalRule.Default with { GenericValues = [new string('a', 65)] }));
+        Assert.True(Imports(GlobalRule.Default));
+        Assert.False(Imports(GlobalRule.Default with { GenericValues = ["has space"] }));
+        Assert.False(Imports(GlobalRule.Default with { GenericValues = [""] }));
+        Assert.False(Imports(GlobalRule.Default with { GenericValues = [new string('a', 65)] }));
     }
 
     [Fact]
@@ -227,7 +273,7 @@ public sealed class BotTests : IDisposable
     {
         // Revisions 1-2 listed utm_* per site; that must not make an unedited row look customised.
         var cfg = MakeLegacyGuild(_ =>
-            SaveLegacy("reddit", DefaultSites.Create().Single(s => s.Name == "reddit") with
+            SaveLegacy("reddit", DefaultSites.All.Single(s => s.Name == "reddit") with
                 { StripParams = ["utm_*", "share_id", "correlation_id", "rdt", "ref", "ref_source"], TidyParams = [] })).Get(Guild);
 
         var reddit = cfg.Sites.Single(s => s.Name == "reddit");
@@ -314,9 +360,9 @@ public sealed class BotTests : IDisposable
         var store = NewStore();
         _ = store.Get(Guild);
         Raw($"DELETE FROM sites WHERE guild_id = {Guild} AND name NOT IN ('youtube','instagram','x','facebook','reddit','tiktok','spotify','twitch')");
-        foreach (var original in DefaultSites.Create().Where(s => DefaultSites.OriginalNames.Contains(s.Name)))
+        foreach (var original in DefaultSites.All.Where(s => DefaultSites.OriginalNames.Contains(s.Name)))
             SaveLegacy(original.Name, original);
-        SaveLegacy("youtube", DefaultSites.Create().Single(s => s.Name == "youtube") with
+        SaveLegacy("youtube", DefaultSites.All.Single(s => s.Name == "youtube") with
             { StripParams = ["si", "utm_*", "fbclid", "gclid"], TidyParams = ["feature", "pp"] }); // revision 1 had no "is"
         Raw($"DELETE FROM settings WHERE guild_id = {Guild} AND key = '{ConfigStore.DefaultsRevisionKey}'");
         tweak?.Invoke(store);
@@ -328,7 +374,7 @@ public sealed class BotTests : IDisposable
     {
         var cfg = MakeLegacyGuild().Get(Guild);
 
-        Assert.All(DefaultSites.Create(), d => Assert.Contains(cfg.Sites, s => s.Name == d.Name));
+        Assert.All(DefaultSites.All, d => Assert.Contains(cfg.Sites, s => s.Name == d.Name));
         Assert.Contains("is", cfg.Sites.Single(s => s.Name == "youtube").StripParams);
         Assert.Empty(cfg.OutdatedBuiltIns);
     }
@@ -336,7 +382,7 @@ public sealed class BotTests : IDisposable
     [Fact]
     public void Legacy_guild_keeps_deleted_originals_deleted_and_edited_sites_untouched()
     {
-        var edited = DefaultSites.Create().Single(s => s.Name == "x") with { StripParams = ["only_this"], TidyParams = [] };
+        var edited = DefaultSites.All.Single(s => s.Name == "x") with { StripParams = ["only_this"], TidyParams = [] };
         var cfg = MakeLegacyGuild(_ =>
         {
             Raw($"DELETE FROM sites WHERE guild_id = {Guild} AND name = 'twitch'"); // deleted before revisions existed
@@ -354,7 +400,7 @@ public sealed class BotTests : IDisposable
     public void Refreshing_a_site_keeps_its_enabled_flag()
     {
         var cfg = MakeLegacyGuild(_ =>
-            SaveLegacy("youtube", DefaultSites.Create().Single(s => s.Name == "youtube") with
+            SaveLegacy("youtube", DefaultSites.All.Single(s => s.Name == "youtube") with
                 { Enabled = false, StripParams = ["si", "utm_*", "fbclid", "gclid"], TidyParams = ["feature", "pp"] })).Get(Guild);
 
         var youtube = cfg.Sites.Single(s => s.Name == "youtube");
@@ -389,7 +435,7 @@ public sealed class BotTests : IDisposable
         store.SaveSite(Guild, google with { StripParams = [.. google.StripParams, "extra"] });
         Assert.True(store.Get(Guild).Sites.Single(s => s.Name == "google").Customised);
 
-        store.SaveSite(Guild, DefaultSites.Create().Single(s => s.Name == "google"), customises: false);
+        store.SaveSite(Guild, DefaultSites.All.Single(s => s.Name == "google"), customises: false);
         var reset = store.Get(Guild).Sites.Single(s => s.Name == "google");
         Assert.False(reset.Customised);
         Assert.Equal(DefaultSites.Revision, reset.DefaultRevision);
@@ -452,8 +498,9 @@ public sealed class BotTests : IDisposable
         Assert.Equal(["theirs"], NewStore().Get(Guild).Sites.Select(s => s.Name));
     }
 
-    private static string Bundle(Func<string, string>? edit = null) =>
-        (edit ?? (s => s))(ConfigTransfer.Export(new ConfigStore(Path.Combine(Path.GetTempPath(), "lc-" + Guid.NewGuid().ToString("N"), "x.db")).Get(1)));
+    /// <summary>An export of a fresh server, optionally edited.</summary>
+    private string Bundle(Func<string, string>? edit = null) =>
+        (edit ?? (s => s))(ConfigTransfer.Export(NewStore().Get(Guild + 99)));
 
     [Theory]
     [InlineData("not json")]
@@ -480,21 +527,74 @@ public sealed class BotTests : IDisposable
     [Fact]
     public void Validation_rejects_duplicate_names_bad_regexes_and_too_many_sites()
     {
-        ConfigBundle With(params SiteRule[] sites) => new(ConfigTransfer.FormatVersion, sites, GlobalRule.Default, ConfigStore.DefaultInfoLink, "🪞", true);
-        bool Valid(ConfigBundle b) => ConfigTransfer.TryParse(System.Text.Json.JsonSerializer.Serialize(b), out _, out _);
+        bool Valid(params SiteRule[] sites) => Imports(GlobalRule.Default, sites);
         var ok = new SiteRule { Name = "a", Hosts = ["a.example"] };
 
-        Assert.True(Valid(With(ok)));
-        Assert.False(Valid(With(ok, ok)));
-        Assert.False(Valid(With(ok with { StripPathPatterns = ["([unclosed"] })));
-        Assert.False(Valid(With(ok with { MirrorPathPattern = "([unclosed" })));
-        Assert.False(Valid(With(ok with { Hosts = ["not a host"] })));
-        Assert.False(Valid(With(ok with { StripParams = ["bad&name"] })));
-        Assert.False(Valid(With(ok with { TidyParams = ["bad&name"] })));
-        Assert.False(Valid(With(ok with { TidyParams = null! })));
-        Assert.True(Valid(With(ok with { TidyParams = ["feature"] })));
-        Assert.False(Valid(With(ok with { DefaultRevision = DefaultSites.Revision + 1 })));
-        Assert.False(Valid(With(Enumerable.Range(0, ConfigTransfer.MaxSites + 1).Select(i => ok with { Name = "s" + i }).ToArray())));
+        Assert.True(Valid(ok));
+        Assert.False(Valid(ok, ok));
+        Assert.False(Valid(ok with { StripPathPatterns = ["([unclosed"] }));
+        Assert.False(Valid(ok with { MirrorPathPattern = "([unclosed" }));
+        Assert.False(Valid(ok with { Hosts = ["not a host"] }));
+        Assert.False(Valid(ok with { StripParams = ["bad&name"] }));
+        Assert.False(Valid(ok with { TidyParams = ["bad&name"] }));
+        Assert.False(Valid(ok with { TidyParams = null! }));
+        Assert.True(Valid(ok with { TidyParams = ["feature"] }));
+        Assert.False(Valid(ok with { DefaultRevision = DefaultSites.Revision + 1 }));
+        Assert.False(Valid(Enumerable.Range(0, ConfigTransfer.MaxSites + 1).Select(i => ok with { Name = "s" + i }).ToArray()));
+    }
+
+    [Fact]
+    public void Import_accepts_everything_up_to_the_shared_limits_and_nothing_beyond()
+    {
+        bool Valid(SiteRule site, GlobalRule? global = null) => Imports(global ?? GlobalRule.Default, site);
+        string[] Many(int n, string prefix) => Enumerable.Range(0, n).Select(i => prefix + i).ToArray();
+        var atLimit = new SiteRule
+        {
+            Name = "full",
+            Hosts = Many(Limits.HostsPerSite, "h").Select(h => h + ".example").ToArray(),
+            StripParams = Many(Limits.EntriesPerList, "p"),
+            TidyParams = Many(Limits.EntriesPerList, "t"),
+            StripPathPatterns = Many(Limits.PathPatternsPerSite, "/x"),
+            MirrorHost = "mirror.example",
+            MirrorPathPattern = new string('a', Limits.RegexLength),
+        };
+
+        Assert.True(Valid(atLimit, new GlobalRule(true, Many(Limits.EntriesPerList, "g"), Many(Limits.EntriesPerList, "v"))));
+        Assert.False(Valid(atLimit with { Hosts = [.. atLimit.Hosts, "one-more.example"] }));
+        Assert.False(Valid(atLimit with { StripParams = [.. atLimit.StripParams, "extra"] }));
+        Assert.False(Valid(atLimit with { TidyParams = [.. atLimit.TidyParams, "extra"] }));
+        Assert.False(Valid(atLimit with { StripPathPatterns = [.. atLimit.StripPathPatterns, "/y"] }));
+        Assert.False(Valid(atLimit with { MirrorPathPattern = new string('a', Limits.RegexLength + 1) }));
+        Assert.False(Valid(atLimit, new GlobalRule(true, Many(Limits.EntriesPerList + 1, "g"))));
+    }
+
+    [Fact]
+    public void Imported_info_link_is_normalised_like_the_command_does()
+    {
+        var json = Bundle(j => j.Replace(ConfigStore.DefaultInfoLink, "https://example.com/a b>c"));
+
+        Assert.True(ConfigTransfer.TryParse(json, out var bundle, out var error), error);
+        Assert.Equal("https://example.com/a%20b%3Ec", bundle.InfoLink);
+    }
+
+    [Fact]
+    public void Only_edits_to_recent_messages_are_handled()
+    {
+        var posted = new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero);
+
+        Assert.True(MessageHandler.IsRecentEdit(posted, posted.AddMinutes(1)));
+        Assert.True(MessageHandler.IsRecentEdit(posted, posted.AddHours(6)));
+        Assert.False(MessageHandler.IsRecentEdit(posted, posted.AddHours(6).AddSeconds(1)));
+    }
+
+    [Fact]
+    public void Long_text_is_cut_to_one_discord_message()
+    {
+        Assert.Equal("short", Limits.FitMessage("short"));
+        var fitted = Limits.FitMessage(new string('a', Limits.MessageLength + 50));
+        Assert.Equal(Limits.MessageLength, fitted.Length);
+        Assert.EndsWith("…", fitted);
+        Assert.Equal(Limits.MessageLength, Limits.FitMessage(new string('a', Limits.MessageLength)).Length);
     }
 
     [Theory]

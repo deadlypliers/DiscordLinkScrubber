@@ -5,7 +5,7 @@ namespace LinkCleaner.Tests;
 public class LinkProcessorTests
 {
     private static ProcessedMessage Run(string content, IReadOnlyList<SiteRule>? sites = null) =>
-        LinkProcessor.Process(content, sites ?? DefaultSites.Create(), GlobalRule.Default);
+        LinkProcessor.Process(content, sites ?? DefaultSites.All, GlobalRule.Default);
 
     // ---- Tracking removal: the link is rewritten ----------------------------------------
 
@@ -111,14 +111,14 @@ public class LinkProcessorTests
     [Fact]
     public void Null_content_is_safe()
     {
-        var result = LinkProcessor.Process(null, DefaultSites.Create());
+        var result = LinkProcessor.Process(null, DefaultSites.All);
         Assert.False(result.HasWork);
     }
 
     [Fact]
     public void Disabled_site_is_ignored()
     {
-        var sites = DefaultSites.Create().Select(s => s.Name == "youtube" ? s with { Enabled = false } : s).ToList();
+        var sites = DefaultSites.All.Select(s => s.Name == "youtube" ? s with { Enabled = false } : s).ToList();
         var result = Run("https://youtu.be/abc?si=x", sites);
         Assert.False(result.HasWork);
     }
@@ -126,7 +126,7 @@ public class LinkProcessorTests
     [Fact]
     public void Site_without_mirror_never_mirrors()
     {
-        var sites = DefaultSites.Create().Select(s => s.Name == "x" ? s with { MirrorHost = null } : s).ToList();
+        var sites = DefaultSites.All.Select(s => s.Name == "x" ? s with { MirrorHost = null } : s).ToList();
         var result = Run("https://x.com/user/status/1?s=20", sites);
 
         var link = Assert.Single(result.Links);
@@ -212,21 +212,6 @@ public class LinkProcessorTests
         Assert.Equal("https://youtu.be/abc?si=x", content.Substring(link.Start, link.Length));
     }
 
-    // ---- "They said" text ---------------------------------------------------------------
-
-    [Theory]
-    [InlineData("https://youtu.be/abc?si=x", false)]
-    [InlineData("  https://youtu.be/abc?si=x  ", false)]
-    [InlineData("||https://youtu.be/abc?si=x||", false)]
-    [InlineData("<https://youtu.be/abc?si=x>", false)]
-    [InlineData("check this out https://youtu.be/abc?si=x", true)]
-    [InlineData("https://youtu.be/abc?si=x lol", true)]
-    [InlineData("🔥 https://youtu.be/abc?si=x", true)]
-    public void Detects_whether_user_wrote_text(string input, bool expected)
-    {
-        Assert.Equal(expected, Run(input).HasUserText);
-    }
-
     // ---- StripParams directly -----------------------------------------------------------
 
     [Theory]
@@ -250,7 +235,7 @@ public class LinkProcessorTests
     // ---- Global rule: applies to every site --------------------------------------------
 
     private static ProcessedMessage RunGlobal(string content, GlobalRule? global, IReadOnlyList<SiteRule>? sites = null) =>
-        LinkProcessor.Process(content, sites ?? DefaultSites.Create(), global);
+        LinkProcessor.Process(content, sites ?? DefaultSites.All, global);
 
     [Theory]
     [InlineData("https://example.com/a?utm_source=jane42&id=5", "https://example.com/a?id=5")]
@@ -334,7 +319,7 @@ public class LinkProcessorTests
     public void Global_params_add_to_a_matching_sites_own_list()
     {
         // A site whose own list lost utm_* still gets it cleaned by the global rule.
-        var youtube = DefaultSites.Create().Single(s => s.Name == "youtube") with { StripParams = ["si"] };
+        var youtube = DefaultSites.All.Single(s => s.Name == "youtube") with { StripParams = ["si"] };
 
         var result = RunGlobal("https://www.youtube.com/watch?v=abc&utm_source=x&si=y", GlobalRule.Default, [youtube]);
 
@@ -406,7 +391,7 @@ public class LinkProcessorTests
     // ---- Enforcement.IncludeCosmetic: cosmetic params are a reason to act ----------------
 
     private static ProcessedMessage RunStrict(string content, GlobalRule? global) =>
-        LinkProcessor.Process(content, DefaultSites.Create(), global, Enforcement.IncludeCosmetic);
+        LinkProcessor.Process(content, DefaultSites.All, global, Enforcement.IncludeCosmetic);
 
     [Theory]
     [InlineData("https://youtu.be/7duzY5x1Kq8?feature=shared", "https://youtu.be/7duzY5x1Kq8")]
@@ -444,7 +429,7 @@ public class LinkProcessorTests
     [Fact]
     public void No_two_default_sites_share_a_host_and_names_are_unique()
     {
-        var sites = DefaultSites.Create();
+        var sites = DefaultSites.All;
 
         Assert.Equal(sites.Count, sites.Select(s => s.Name).Distinct().Count());
         var hosts = sites.SelectMany(s => s.Hosts).ToList();

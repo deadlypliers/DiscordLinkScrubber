@@ -93,7 +93,7 @@ public sealed class LinkCleanerModule(ConfigStore store, AttachmentDownloader do
     public async Task Test([Summary(description: "Paste a message or link to test")] string text)
     {
         var cfg = store.Get(Context.Guild.Id);
-        var result = LinkProcessor.Process(text, cfg.Sites, cfg.GlobalRule);
+        var result = LinkProcessor.Process(text, cfg.Sites, cfg.GlobalRule, cfg.Enforcement);
         if (!result.HasWork)
         {
             await this.Say("Nothing to do: no tracking params found and no mirror applies.");
@@ -102,13 +102,16 @@ public sealed class LinkCleanerModule(ConfigStore store, AttachmentDownloader do
 
         var sb = new StringBuilder();
         if (result.HasTrackingRemoved)
-            sb.AppendLine($"**Repost with:**\n{result.RewrittenContent}\n");
+        {
+            var (repost, _) = MessageHandler.ComposeRepost(Context.User.Mention, result, cfg.InfoLink, ping: false, hasFiles: false);
+            sb.AppendLine($"**Repost would look like:**\n{string.Join('\n', repost.Split('\n').Select(l => "> " + l))}\n");
+        }
         if (result.MirrorReplyLinks.Count > 0)
             sb.AppendLine($"**Mirror reply:**\n{string.Join('\n', result.MirrorReplyLinks.Select(l => $"<{l}>"))}");
         await this.Say(sb.ToString());
     }
 
-    [SlashCommand("infolink", "Set the 'Why?' link shown in the explanation.")]
+    [SlashCommand("infolink", "Set the 'Why did this happen?' link shown on reposts.")]
     public async Task InfoLink([Summary(description: "An http(s) URL, e.g. a message link in your server")] string url)
     {
         if (!Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https"))
@@ -124,9 +127,9 @@ public sealed class LinkCleanerModule(ConfigStore store, AttachmentDownloader do
     public async Task Prefix([Summary(description: "Emoji or short text; omit to remove")] string? emoji = null)
     {
         emoji = emoji?.Trim() ?? "";
-        if (emoji.Length > 16)
+        if (emoji.Length > Limits.MirrorPrefixLength)
         {
-            await this.Say("Keep the prefix short (16 characters or fewer).");
+            await this.Say($"Keep the prefix short ({Limits.MirrorPrefixLength} characters or fewer).");
             return;
         }
         store.SetSetting(Context.Guild.Id, ConfigStore.MirrorPrefixKey, emoji);
@@ -161,20 +164,17 @@ public sealed class LinkCleanerModule(ConfigStore store, AttachmentDownloader do
     // ---- /linkcleaner site … ------------------------------------------------------------
 
     [Group("site", "Manage the sites the bot cleans.")]
-    public sealed class SiteGroup(ConfigStore store) : InteractionModuleBase<SocketInteractionContext>
+    public sealed class SiteGroup(ConfigStore store) : SiteCommandModule(store)
     {
         [SlashCommand("list", "List all sites.")]
         public Task List() =>
-            this.Say(string.Join("\n\n", store.Get(Context.Guild.Id).Sites.Select(CommandHelpers.Describe)) is { Length: > 0 } text
-                ? (text.Length > 1900 ? text[..1900] + "…" : text)
+            this.Say(string.Join("\n\n", Store.Get(Context.Guild.Id).Sites.Select(CommandHelpers.Describe)) is { Length: > 0 } text
+                ? text
                 : "No sites configured.");
 
         [SlashCommand("show", "Show one site's rules.")]
-        public async Task Show([Autocomplete(typeof(SiteAutocomplete))] string site)
-        {
-            var rule = Find(site);
-            await this.Say(rule is null ? NotFound(site) : CommandHelpers.Describe(rule));
-        }
+        public Task Show([Autocomplete(typeof(SiteAutocomplete))] string site) =>
+            WithSite(site, rule => this.Say(CommandHelpers.Describe(rule)));
 
         [SlashCommand("enable", "Turn a site on.")]
         public Task Enable([Autocomplete(typeof(SiteAutocomplete))] string site) => SetEnabled(site, true);
@@ -200,101 +200,85 @@ public sealed class LinkCleanerModule(ConfigStore store, AttachmentDownloader do
             }
             if (!CommandHelpers.TryNormalizeHost(host, out var normalized))
             {
-                await this.Say("That doesn't look like a hostname.");
+                await this.Say(CommandHelpers.InvalidHost);
                 return;
             }
-            store.SaveSite(Context.Guild.Id, new SiteRule { Name = name, Hosts = [normalized] });
+            Save(new SiteRule { Name = name, Hosts = [normalized] });
             await this.Say($"Added `{name}` for `{normalized}`. Now add params with `/linkcleaner param add`.");
         }
 
         [SlashCommand("remove", "Delete a site.")]
-        public async Task Remove([Autocomplete(typeof(SiteAutocomplete))] string site)
+        public Task Remove([Autocomplete(typeof(SiteAutocomplete))] string site) => WithSite(site, async rule =>
         {
-            if (Find(site) is null)
-            {
-                await this.Say(NotFound(site));
-                return;
-            }
-            store.DeleteSite(Context.Guild.Id, site);
+            Store.DeleteSite(Context.Guild.Id, rule.Name);
             await this.Say($"Removed `{site}`.");
-        }
+        });
 
         [SlashCommand("reset", "Restore a built-in site to its defaults.")]
         public async Task Reset([Autocomplete(typeof(SiteAutocomplete))] string site)
         {
-            var original = DefaultSites.Create().FirstOrDefault(s => s.Name == site);
+            var original = DefaultSites.All.FirstOrDefault(s => s.Name == site);
             if (original is null)
             {
                 await this.Say($"`{site}` isn't a built-in site, so there are no defaults to restore.");
                 return;
             }
-            store.SaveSite(Context.Guild.Id, original, customises: false);
+            Save(original, customises: false);
             await this.Say($"Restored `{site}` to its defaults. It will now receive future built-in updates.");
         }
 
-        private async Task SetEnabled(string site, bool enabled)
+        private Task SetEnabled(string site, bool enabled) => WithSite(site, async rule =>
         {
-            var rule = Find(site);
-            if (rule is null)
-            {
-                await this.Say(NotFound(site));
-                return;
-            }
-            store.SaveSite(Context.Guild.Id, rule with { Enabled = enabled }, customises: false);
+            Save(rule with { Enabled = enabled }, customises: false);
             await this.Say($"`{site}` is now {(enabled ? "enabled" : "disabled")}.");
-        }
-
-        private SiteRule? Find(string site) => store.Get(Context.Guild.Id).Sites.FirstOrDefault(s => s.Name == site);
-        private static string NotFound(string site) => $"No site named `{site}`.";
+        });
     }
 
     // ---- /linkcleaner param … -----------------------------------------------------------
 
     [Group("param", "Manage the query parameters stripped from a site's links.")]
-    public sealed class ParamGroup(ConfigStore store) : InteractionModuleBase<SocketInteractionContext>
+    public sealed class ParamGroup(ConfigStore store) : SiteCommandModule(store)
     {
         [SlashCommand("add", "Strip a parameter from this site's links.")]
-        public async Task Add(
+        public Task Add(
             [Autocomplete(typeof(SiteAutocomplete))] string site,
             [Summary(description: "Parameter name; end with * for a prefix, e.g. utm_*")] string name,
-            [Summary(description: "Cosmetic: only removed from links that also carry a stripped param")] bool tidy = false)
-        {
-            name = name.Trim();
-            var rule = store.Get(Context.Guild.Id).Sites.FirstOrDefault(s => s.Name == site);
-            if (rule is null) { await this.Say($"No site named `{site}`."); return; }
-            if (!CommandHelpers.IsValidParamName(name)) { await this.Say("That isn't a valid parameter name."); return; }
-            if (rule.StripParams.Concat(rule.TidyParams).Contains(name, StringComparer.OrdinalIgnoreCase))
-            { await this.Say($"`{name}` is already on `{site}`'s list."); return; }
+            [Summary(description: "Cosmetic: only removed from links that also carry a stripped param")] bool tidy = false) =>
+            WithSite(site, async rule =>
+            {
+                name = name.Trim();
+                if (!CommandHelpers.IsValidParamName(name)) { await this.Say(CommandHelpers.InvalidParam); return; }
+                if (rule.StripParams.Concat(rule.TidyParams).Contains(name, StringComparer.OrdinalIgnoreCase))
+                { await this.Say($"`{name}` is already on `{site}`'s list."); return; }
+                if ((tidy ? rule.TidyParams : rule.StripParams).Count >= Limits.EntriesPerList)
+                { await this.Say(CommandHelpers.ListFull(Limits.EntriesPerList)); return; }
 
-            if (tidy)
-            {
-                store.SaveSite(Context.Guild.Id, rule with { TidyParams = [.. rule.TidyParams, name] });
-                await this.Say($"`{name}` will be removed from `{site}` links, but only when they also carry a stripped param.");
-            }
-            else
-            {
-                store.SaveSite(Context.Guild.Id, rule with { StripParams = [.. rule.StripParams, name] });
-                await this.Say($"`{site}` links will now have `{name}` removed.");
-            }
-        }
+                if (tidy)
+                {
+                    Save(rule with { TidyParams = [.. rule.TidyParams, name] });
+                    await this.Say($"`{name}` will be removed from `{site}` links, but only when they also carry a stripped param.");
+                }
+                else
+                {
+                    Save(rule with { StripParams = [.. rule.StripParams, name] });
+                    await this.Say($"`{site}` links will now have `{name}` removed.");
+                }
+            });
 
         [SlashCommand("remove", "Stop stripping a parameter from this site's links.")]
-        public async Task Remove(
+        public Task Remove(
             [Autocomplete(typeof(SiteAutocomplete))] string site,
-            [Summary(description: "Parameter name exactly as listed")] string name)
-        {
-            name = name.Trim();
-            var rule = store.Get(Context.Guild.Id).Sites.FirstOrDefault(s => s.Name == site);
-            if (rule is null) { await this.Say($"No site named `{site}`."); return; }
+            [Summary(description: "Parameter name exactly as listed")] string name) =>
+            WithSite(site, async rule =>
+            {
+                name = name.Trim();
+                var strip = CommandHelpers.Without(rule.StripParams, name, StringComparer.OrdinalIgnoreCase);
+                var tidy = CommandHelpers.Without(rule.TidyParams, name, StringComparer.OrdinalIgnoreCase);
+                if (strip is null && tidy is null) { await this.Say($"`{name}` isn't in `{site}`'s list."); return; }
 
-            var remaining = rule.StripParams.Where(p => !p.Equals(name, StringComparison.OrdinalIgnoreCase)).ToList();
-            var remainingTidy = rule.TidyParams.Where(p => !p.Equals(name, StringComparison.OrdinalIgnoreCase)).ToList();
-            if (remaining.Count == rule.StripParams.Count && remainingTidy.Count == rule.TidyParams.Count)
-            { await this.Say($"`{name}` isn't in `{site}`'s list."); return; }
-
-            store.SaveSite(Context.Guild.Id, rule with { StripParams = remaining, TidyParams = remainingTidy });
-            await this.Say($"`{site}` links will keep `{name}` from now on.");
-        }
+                Save(rule with { StripParams = strip ?? rule.StripParams, TidyParams = tidy ?? rule.TidyParams });
+                await this.Say($"`{site}` links will keep `{name}` from now on.");
+            });
     }
 
     // ---- /linkcleaner global … ----------------------------------------------------------
@@ -310,8 +294,9 @@ public sealed class LinkCleanerModule(ConfigStore store, AttachmentDownloader do
         {
             name = name.Trim();
             var global = store.Get(Context.Guild.Id).GlobalRule;
-            if (!CommandHelpers.IsValidParamName(name)) { await this.Say("That isn't a valid parameter name."); return; }
+            if (!CommandHelpers.IsValidParamName(name)) { await this.Say(CommandHelpers.InvalidParam); return; }
             if (global.StripParams.Contains(name, StringComparer.OrdinalIgnoreCase)) { await this.Say($"`{name}` is already on the list."); return; }
+            if (global.StripParams.Count >= Limits.EntriesPerList) { await this.Say(CommandHelpers.ListFull(Limits.EntriesPerList)); return; }
 
             store.SetGlobalParams(Context.Guild.Id, [.. global.StripParams, name]);
             await this.Say($"`{name}` will now be removed from every link." + (global.Enabled ? "" : " (The global rule is currently disabled: `/linkcleaner global enable`.)"));
@@ -321,9 +306,8 @@ public sealed class LinkCleanerModule(ConfigStore store, AttachmentDownloader do
         public async Task Remove([Summary(description: "Parameter name exactly as listed")] string name)
         {
             name = name.Trim();
-            var global = store.Get(Context.Guild.Id).GlobalRule;
-            var remaining = global.StripParams.Where(p => !p.Equals(name, StringComparison.OrdinalIgnoreCase)).ToList();
-            if (remaining.Count == global.StripParams.Count) { await this.Say($"`{name}` isn't on the list."); return; }
+            var remaining = CommandHelpers.Without(store.Get(Context.Guild.Id).GlobalRule.StripParams, name, StringComparer.OrdinalIgnoreCase);
+            if (remaining is null) { await this.Say($"`{name}` isn't on the list."); return; }
 
             store.SetGlobalParams(Context.Guild.Id, remaining);
             await this.Say($"`{name}` is no longer removed from every link. Site rules still apply.");
@@ -336,6 +320,7 @@ public sealed class LinkCleanerModule(ConfigStore store, AttachmentDownloader do
             var global = store.Get(Context.Guild.Id).GlobalRule;
             if (!CommandHelpers.IsValidGenericValue(value)) { await this.Say("That isn't a valid value (no spaces, 64 characters max)."); return; }
             if (global.EffectiveGenericValues.Contains(value, StringComparer.OrdinalIgnoreCase)) { await this.Say($"`{value}` is already generic."); return; }
+            if (global.EffectiveGenericValues.Count >= Limits.EntriesPerList) { await this.Say(CommandHelpers.ListFull(Limits.EntriesPerList)); return; }
 
             store.SetGenericValues(Context.Guild.Id, [.. global.EffectiveGenericValues, value]);
             await this.Say($"`utm_*` params with the value `{value}` will now be left alone.");
@@ -345,9 +330,8 @@ public sealed class LinkCleanerModule(ConfigStore store, AttachmentDownloader do
         public async Task GenericRemove([Summary(description: "The value exactly as listed")] string value)
         {
             value = value.Trim();
-            var global = store.Get(Context.Guild.Id).GlobalRule;
-            var remaining = global.EffectiveGenericValues.Where(v => !v.Equals(value, StringComparison.OrdinalIgnoreCase)).ToList();
-            if (remaining.Count == global.EffectiveGenericValues.Count) { await this.Say($"`{value}` isn't on the list."); return; }
+            var remaining = CommandHelpers.Without(store.Get(Context.Guild.Id).GlobalRule.EffectiveGenericValues, value, StringComparer.OrdinalIgnoreCase);
+            if (remaining is null) { await this.Say($"`{value}` isn't on the list."); return; }
 
             store.SetGenericValues(Context.Guild.Id, remaining);
             await this.Say($"`utm_*` params with the value `{value}` now count as tracking.");
@@ -380,97 +364,87 @@ public sealed class LinkCleanerModule(ConfigStore store, AttachmentDownloader do
     // ---- /linkcleaner path … ------------------------------------------------------------
 
     [Group("path", "Remove trackers that live in a link's path (e.g. Amazon's /ref=…).")]
-    public sealed class PathGroup(ConfigStore store) : InteractionModuleBase<SocketInteractionContext>
+    public sealed class PathGroup(ConfigStore store) : SiteCommandModule(store)
     {
         [SlashCommand("add", "Remove text matching a regex from this site's link paths.")]
-        public async Task Add(
+        public Task Add(
             [Autocomplete(typeof(SiteAutocomplete))] string site,
-            [Summary(description: "Regex matched against the path only, e.g. /ref=[^/?#]*")] string pattern)
-        {
-            var rule = store.Get(Context.Guild.Id).Sites.FirstOrDefault(s => s.Name == site);
-            if (rule is null) { await this.Say($"No site named `{site}`."); return; }
-            if (pattern.Length is 0 or > 200 || !CommandHelpers.IsValidRegex(pattern)) { await this.Say("That isn't a valid regex (200 characters max)."); return; }
-            if (rule.StripPathPatterns.Contains(pattern)) { await this.Say("That pattern is already listed."); return; }
+            [Summary(description: "Regex matched against the path only, e.g. /ref=[^/?#]*")] string pattern) =>
+            WithSite(site, async rule =>
+            {
+                if (!CommandHelpers.IsValidRegex(pattern)) { await this.Say(CommandHelpers.InvalidRegex); return; }
+                if (rule.StripPathPatterns.Contains(pattern)) { await this.Say("That pattern is already listed."); return; }
+                if (rule.StripPathPatterns.Count >= Limits.PathPatternsPerSite) { await this.Say(CommandHelpers.ListFull(Limits.PathPatternsPerSite)); return; }
 
-            store.SaveSite(Context.Guild.Id, rule with { StripPathPatterns = [.. rule.StripPathPatterns, pattern] });
-            await this.Say($"`{site}` link paths will have text matching `{pattern}` removed.");
-        }
+                Save(rule with { StripPathPatterns = [.. rule.StripPathPatterns, pattern] });
+                await this.Say($"`{site}` link paths will have text matching `{pattern}` removed.");
+            });
 
         [SlashCommand("remove", "Stop removing a path pattern.")]
-        public async Task Remove([Autocomplete(typeof(SiteAutocomplete))] string site, [Summary(description: "The pattern exactly as listed")] string pattern)
-        {
-            var rule = store.Get(Context.Guild.Id).Sites.FirstOrDefault(s => s.Name == site);
-            if (rule is null) { await this.Say($"No site named `{site}`."); return; }
+        public Task Remove([Autocomplete(typeof(SiteAutocomplete))] string site, [Summary(description: "The pattern exactly as listed")] string pattern) =>
+            WithSite(site, async rule =>
+            {
+                var remaining = CommandHelpers.Without(rule.StripPathPatterns, pattern);
+                if (remaining is null) { await this.Say("That pattern isn't listed."); return; }
 
-            var remaining = rule.StripPathPatterns.Where(p => p != pattern).ToList();
-            if (remaining.Count == rule.StripPathPatterns.Count) { await this.Say("That pattern isn't listed."); return; }
-
-            store.SaveSite(Context.Guild.Id, rule with { StripPathPatterns = remaining });
-            await this.Say($"Removed the path pattern from `{site}`.");
-        }
+                Save(rule with { StripPathPatterns = remaining });
+                await this.Say($"Removed the path pattern from `{site}`.");
+            });
     }
 
     // ---- /linkcleaner host … ------------------------------------------------------------
 
     [Group("host", "Manage the hostnames a site rule covers (aliases).")]
-    public sealed class HostGroup(ConfigStore store) : InteractionModuleBase<SocketInteractionContext>
+    public sealed class HostGroup(ConfigStore store) : SiteCommandModule(store)
     {
         [SlashCommand("add", "Treat another hostname as part of this site.")]
-        public async Task Add([Autocomplete(typeof(SiteAutocomplete))] string site, string host)
+        public Task Add([Autocomplete(typeof(SiteAutocomplete))] string site, string host) => WithSite(site, async rule =>
         {
-            var rule = store.Get(Context.Guild.Id).Sites.FirstOrDefault(s => s.Name == site);
-            if (rule is null) { await this.Say($"No site named `{site}`."); return; }
-            if (!CommandHelpers.TryNormalizeHost(host, out var normalized)) { await this.Say("That doesn't look like a hostname."); return; }
+            if (!CommandHelpers.TryNormalizeHost(host, out var normalized)) { await this.Say(CommandHelpers.InvalidHost); return; }
             if (rule.Hosts.Contains(normalized)) { await this.Say($"`{normalized}` is already covered."); return; }
+            if (rule.Hosts.Count >= Limits.HostsPerSite) { await this.Say(CommandHelpers.ListFull(Limits.HostsPerSite)); return; }
 
-            store.SaveSite(Context.Guild.Id, rule with { Hosts = [.. rule.Hosts, normalized] });
+            Save(rule with { Hosts = [.. rule.Hosts, normalized] });
             await this.Say($"`{site}` now also covers `{normalized}` and its subdomains.");
-        }
+        });
 
         [SlashCommand("remove", "Stop covering a hostname.")]
-        public async Task Remove([Autocomplete(typeof(SiteAutocomplete))] string site, string host)
+        public Task Remove([Autocomplete(typeof(SiteAutocomplete))] string site, string host) => WithSite(site, async rule =>
         {
-            var rule = store.Get(Context.Guild.Id).Sites.FirstOrDefault(s => s.Name == site);
-            if (rule is null) { await this.Say($"No site named `{site}`."); return; }
-            if (!CommandHelpers.TryNormalizeHost(host, out var normalized)) { await this.Say("That doesn't look like a hostname."); return; }
+            if (!CommandHelpers.TryNormalizeHost(host, out var normalized)) { await this.Say(CommandHelpers.InvalidHost); return; }
+            var remaining = CommandHelpers.Without(rule.Hosts, normalized);
+            if (remaining is null) { await this.Say($"`{normalized}` isn't in `{site}`'s list."); return; }
 
-            var remaining = rule.Hosts.Where(h => h != normalized).ToList();
-            if (remaining.Count == rule.Hosts.Count) { await this.Say($"`{normalized}` isn't in `{site}`'s list."); return; }
-
-            store.SaveSite(Context.Guild.Id, rule with { Hosts = remaining });
+            Save(rule with { Hosts = remaining });
             await this.Say($"`{site}` no longer covers `{normalized}`.");
-        }
+        });
     }
 
     // ---- /linkcleaner mirror … ----------------------------------------------------------
 
     [Group("mirror", "Choose the embed-friendly mirror used for login-walled sites.")]
-    public sealed class MirrorGroup(ConfigStore store) : InteractionModuleBase<SocketInteractionContext>
+    public sealed class MirrorGroup(ConfigStore store) : SiteCommandModule(store)
     {
         [SlashCommand("set", "Use a mirror host for this site.")]
-        public async Task Set(
+        public Task Set(
             [Autocomplete(typeof(SiteAutocomplete))] string site,
             [Summary(description: "Mirror hostname, e.g. fixupx.com")] string host,
-            [Summary(description: "Optional regex for which URL paths get a mirror; omit for every non-root path")] string? pathPattern = null)
-        {
-            var rule = store.Get(Context.Guild.Id).Sites.FirstOrDefault(s => s.Name == site);
-            if (rule is null) { await this.Say($"No site named `{site}`."); return; }
-            if (!CommandHelpers.TryNormalizeHost(host, out var normalized)) { await this.Say("That doesn't look like a hostname."); return; }
-            if (pathPattern is not null && !CommandHelpers.IsValidRegex(pathPattern)) { await this.Say("That path pattern isn't a valid regex."); return; }
+            [Summary(description: "Optional regex for which URL paths get a mirror; omit for every non-root path")] string? pathPattern = null) =>
+            WithSite(site, async rule =>
+            {
+                if (!CommandHelpers.TryNormalizeHost(host, out var normalized)) { await this.Say(CommandHelpers.InvalidHost); return; }
+                if (pathPattern is not null && !CommandHelpers.IsValidRegex(pathPattern)) { await this.Say(CommandHelpers.InvalidRegex); return; }
 
-            store.SaveSite(Context.Guild.Id, rule with { MirrorHost = normalized, MirrorPathPattern = pathPattern ?? rule.MirrorPathPattern });
-            await this.Say($"`{site}` links will be mirrored via `{normalized}`.");
-        }
+                Save(rule with { MirrorHost = normalized, MirrorPathPattern = pathPattern ?? rule.MirrorPathPattern });
+                await this.Say($"`{site}` links will be mirrored via `{normalized}`.");
+            });
 
         [SlashCommand("clear", "Stop mirroring this site.")]
-        public async Task Clear([Autocomplete(typeof(SiteAutocomplete))] string site)
+        public Task Clear([Autocomplete(typeof(SiteAutocomplete))] string site) => WithSite(site, async rule =>
         {
-            var rule = store.Get(Context.Guild.Id).Sites.FirstOrDefault(s => s.Name == site);
-            if (rule is null) { await this.Say($"No site named `{site}`."); return; }
-
-            store.SaveSite(Context.Guild.Id, rule with { MirrorHost = null });
+            Save(rule with { MirrorHost = null });
             await this.Say($"`{site}` will no longer be mirrored.");
-        }
+        });
     }
 
     // ---- /linkcleaner channel … ---------------------------------------------------------

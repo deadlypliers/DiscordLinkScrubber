@@ -95,11 +95,14 @@ if ($oldToken -and (Confirm-Wizard 'Reuse the Discord token from the running con
     Say 'Discord developer portal > your application > Bot > Reset Token / Copy'
     Start-Process 'https://discord.com/developers/applications'
     $secure = Read-Host '  Paste the bot token' -AsSecureString
-    $token = [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure))
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try { $token = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
+    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
 }
 $envFile = Join-Path $repoDir '.env'
 $kept = if (Test-Path $envFile) { @(Get-Content $envFile | Where-Object { $_ -notmatch '^DISCORD_TOKEN=' }) } else { @() }
-Write-NoBom $envFile ((@($kept) + "DISCORD_TOKEN=$token") -join "`n" + "`n")
+# -join binds looser than +, so join first, then add the trailing newline.
+Write-NoBom $envFile (((@($kept) + "DISCORD_TOKEN=$token") -join "`n") + "`n")
 Remove-Variable token, oldToken -ErrorAction SilentlyContinue
 Say "Wrote DISCORD_TOKEN to $envFile"
 $overrideFile = Join-Path $repoDir 'compose.override.yaml'

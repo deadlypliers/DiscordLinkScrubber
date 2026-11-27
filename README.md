@@ -5,8 +5,8 @@ posts viewable.
 
 1. **Tracking removal.** If a message contains a link with a tracking parameter (for example
    YouTube's `?si=…`), the bot posts a replacement and deletes the original. The replacement
-   @-mentions the author (without pinging them), keeps what they wrote, swaps in the clean link,
-   and says why with a "Why?" link.
+   names the author ("From @user:"), keeps what they wrote, swaps in the clean link, and ends with a
+   small "Why did this happen?" link.
 2. **Mirrors for login-walled sites.** For X and Instagram posts the bot replies with an
    embed-friendly mirror link (`fixupx.com`, `kkinstagram.com`), so the post shows in chat without
    logging in. If a link has tracking *and* is on one of these sites, the replacement uses the
@@ -38,14 +38,14 @@ A ready-to-paste explanation for your rules channel, including what the bot does
   new rules. Built-in sites you deleted stay deleted.
 - Links in `<angle brackets>`, inline code and code blocks are left alone. `||spoilers||`, replies and
   surrounding text are preserved. Pings in the original text are not repeated.
-- **The original poster is pinged** in the "I removed your tracking link" message, so they know their
-  post was replaced. Only the poster is ever notified; `@everyone`, roles and other users inside their
-  text stay silent, and mirror replies never ping anyone. Admins can switch this off for the whole server
-  (`/linkcleaner pings enabled:false`), and any member can opt out for themselves with
-  `/linkcleaner-pings off`. Opted-out members are still named in the message, just not notified. The
-  message carries a small line explaining the opt-out whenever it does ping.
+- **The original poster is not pinged by default.** They are named in the repost without a notification.
+  Admins can turn pings on for the whole server (`/linkcleaner pings enabled:true`), and any member can then
+  opt out for themselves with `/linkcleaner-pings off`. Only the poster is ever notified; `@everyone`, roles
+  and other users inside their text stay silent, and mirror replies never ping anyone. When a repost does
+  ping, its footer explains how to opt out.
 - Messages with attachments or stickers are not deleted. The bot replies with the clean links instead.
-- Edits that add a link are handled like new messages.
+- Edits that add a link are handled like new messages, for messages posted in the last 6 hours. Edits to older
+  messages are ignored, so an old message is never moved to the bottom of the channel.
 - The bot ignores other bots and webhooks.
 - The repost is always sent **before** the original is deleted, and the original is never deleted if the
   repost fails.
@@ -127,8 +127,8 @@ Everything is configured with slash commands, available to members with **Manage
 | `/linkcleaner channel include` / `exclude` / `reset` / `clear` | Limit where the bot works (default: everywhere) |
 | `/linkcleaner role exempt` / `unexempt` | Exempt roles from cleaning |
 | `/linkcleaner enforcement cosmetic:…` | Default (false): only tracking IDs trigger a repost, cosmetic extras are tidied alongside. True: cosmetic extras like `?feature=shared` or generic `utm_*` labels are cleaned and reposted on their own too |
-| `/linkcleaner pings enabled:…` | Turn pinging the original poster on (default) or off for the whole server |
-| `/linkcleaner infolink url:…` | Set the "Why?" link |
+| `/linkcleaner pings enabled:…` | Turn pinging the original poster on or off (default) for the whole server |
+| `/linkcleaner infolink url:…` | Set the "Why did this happen?" link |
 | `/linkcleaner prefix emoji:…` | Set (or remove) the emoji before mirror replies |
 | `/linkcleaner modlog channel:…` | Log every action to a channel (off by default) |
 

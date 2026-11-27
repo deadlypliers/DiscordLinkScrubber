@@ -13,8 +13,10 @@ public static class DefaultSites
     public static readonly IReadOnlySet<string> OriginalNames = new HashSet<string>
         { "youtube", "instagram", "x", "facebook", "reddit", "tiktok", "spotify", "twitch" };
 
-    public static IReadOnlyList<SiteRule> Create() =>
-        [.. Build().Select(s => s with { DefaultRevision = Revision })];
+    /// <summary>The built-in sites. The rules are immutable records, so one shared list is safe.</summary>
+    public static IReadOnlyList<SiteRule> All { get; } = [.. Build().Select(s => s with { DefaultRevision = Revision })];
+
+    public static IReadOnlySet<string> Names { get; } = All.Select(s => s.Name).ToHashSet();
 
     private static IReadOnlyList<SiteRule> Build() =>
     [

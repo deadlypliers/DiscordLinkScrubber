@@ -16,8 +16,7 @@ public sealed class MessageHandler(
     IMemoryCache cache,
     ILogger<MessageHandler> log)
 {
-    private const int MaxMessageLength = 2000;
-    private const string OptOutHint = "\n-# Don't want these pings? Use /linkcleaner-pings off";
+    private const string OptOutHint = " · No pings: /linkcleaner-pings off";
     private static readonly TimeSpan DedupeWindow = TimeSpan.FromHours(6);
 
     private readonly object _gate = new();
@@ -35,21 +34,50 @@ public sealed class MessageHandler(
             ? new AllowedMentions(AllowedMentionTypes.None) { UserIds = [authorId], MentionRepliedUser = false }
             : AllowedMentions.None;
 
+    /// <summary>
+    /// Picks the repost layout. The original is replaced unless it has files (attachments or stickers,
+    /// which can't be carried over) or the rewritten text is too long to send; then it is kept and the
+    /// text carries just the cleaned links.
+    /// </summary>
+    public static (string Text, bool ReplacesOriginal) ComposeRepost(
+        string mention, ProcessedMessage processed, string infoLink, bool ping, bool hasFiles)
+    {
+        var footer = $"-# [Why did this happen?](<{infoLink}>){(ping ? OptOutHint : "")}";
+
+        if (!hasFiles)
+        {
+            var replacement = $"From {mention}:\n{processed.RewrittenContent}\n{footer}";
+            if (replacement.Length <= Limits.MessageLength)
+                return (replacement, true);
+        }
+
+        var links = processed.ReplacementLinks;
+        var label = links.Count > 1 ? "Clean links" : "Clean link";
+        return ($"{label} for {mention}:\n{string.Join('\n', links)}\n{footer}", false);
+    }
+
     public Task OnMessageReceived(SocketMessage message)
     {
         _ = RunAsync(message);
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// Updates also fire when embeds load. There is no message cache to compare against, so repeats are
+    /// caught by the per-message dedupe instead.
+    /// </summary>
     public Task OnMessageUpdated(Cacheable<IMessage, ulong> before, SocketMessage after, ISocketMessageChannel channel)
     {
-        // Discord also fires updates when embeds resolve: only react when the text itself changed.
-        if (before.HasValue && before.Value.Content == after.Content)
-            return Task.CompletedTask;
-
-        _ = RunAsync(after);
+        if (IsRecentEdit(SnowflakeUtils.FromSnowflake(after.Id), DateTimeOffset.UtcNow))
+            _ = RunAsync(after);
         return Task.CompletedTask;
     }
+
+    /// <summary>
+    /// Only messages posted within the dedupe window are acted on when edited. Reposting an older one would
+    /// move it to the bottom of the channel, and the dedupe would no longer stop a second repost.
+    /// </summary>
+    public static bool IsRecentEdit(DateTimeOffset postedAt, DateTimeOffset now) => now - postedAt <= DedupeWindow;
 
     private async Task RunAsync(SocketMessage message)
     {
@@ -131,38 +159,22 @@ public sealed class MessageHandler(
     /// <summary>Returns the message that now carries the cleaned links, or null if nothing was sent.</summary>
     private async Task<IUserMessage?> RepostAsync(SocketUserMessage msg, ProcessedMessage processed, GuildConfig config)
     {
-        var header = $"🧹 {msg.Author.Mention} shared a link with tracking info, so I removed it. [Why?](<{config.InfoLink}>)";
-        var body = processed.HasUserText
-            ? $"{header}\n\n**They said:**\n{processed.RewrittenContent}"
-            : $"{header}\n\n{processed.RewrittenContent}";
-
-        // The hint goes in before the length check so an over-long body still takes the reply path.
         var ping = ShouldPing(config, msg.Author.Id);
-        var mentions = BuildAllowedMentions(config, msg.Author.Id);
-        var footer = ping ? OptOutHint : "";
-        body += footer;
+        var (text, replacesOriginal) = ComposeRepost(msg.Author.Mention, processed, config.InfoLink, ping,
+            hasFiles: msg.Attachments.Count > 0 || msg.Stickers.Count > 0);
 
-        // Attachments and stickers can't be carried over, and an over-long body can't be sent:
-        // keep the original and reply with just the cleaned links instead.
-        var canReplaceOriginal = msg.Attachments.Count == 0 && msg.Stickers.Count == 0 && body.Length <= MaxMessageLength;
+        // A replacement takes over whatever the original replied to; otherwise reply to the original itself.
+        var replyToId = replacesOriginal
+            ? msg.Reference?.MessageId.ToNullable()
+            : msg.Id;
+        var replyTo = replyToId is { } id ? new MessageReference(id, failIfNotExists: false) : null;
 
         IUserMessage sent;
         try
         {
-            if (canReplaceOriginal)
-            {
-                var replyTo = msg.Reference is { MessageId.IsSpecified: true } r
-                    ? new MessageReference(r.MessageId.Value, failIfNotExists: false)
-                    : null;
-                sent = await msg.Channel.SendMessageAsync(body, allowedMentions: mentions, messageReference: replyTo);
-            }
-            else
-            {
-                var links = string.Join('\n', processed.ReplacementLinks);
-                sent = await msg.Channel.SendMessageAsync($"{header}\n\n{links}{footer}",
-                    allowedMentions: mentions,
-                    messageReference: new MessageReference(msg.Id, failIfNotExists: false));
-            }
+            sent = await msg.Channel.SendMessageAsync(text,
+                allowedMentions: BuildAllowedMentions(config, msg.Author.Id),
+                messageReference: replyTo);
         }
         catch (Exception ex)
         {
@@ -170,7 +182,7 @@ public sealed class MessageHandler(
             return null;
         }
 
-        if (canReplaceOriginal)
+        if (replacesOriginal)
         {
             try
             {
@@ -184,7 +196,7 @@ public sealed class MessageHandler(
 
         log.LogInformation("Message {MessageId} in #{Channel}: removed tracking from {Count} link(s) ({Mode}, author {Pinged})",
             msg.Id, msg.Channel.Name, processed.Links.Count(l => l.TrackingRemoved),
-            canReplaceOriginal ? "reposted and deleted original" : "replied, original kept",
+            replacesOriginal ? "reposted and deleted original" : "replied, original kept",
             ping ? "pinged" : "not pinged");
 
         var lines = processed.Links.Where(l => l.TrackingRemoved).Select(l => $"<{l.Original}> → <{l.Replacement}>");
@@ -235,9 +247,7 @@ public sealed class MessageHandler(
         if (config.ModLogChannelId is not { } channelId || client.GetChannel(channelId) is not IMessageChannel modLog)
             return;
 
-        var text = $"{title} — {msg.Author.Mention} (`{msg.Author.Id}`) in <#{msg.Channel.Id}>\n{string.Join('\n', lines)}";
-        if (text.Length > MaxMessageLength)
-            text = text[..(MaxMessageLength - 1)] + "…";
+        var text = Limits.FitMessage($"{title} — {msg.Author.Mention} (`{msg.Author.Id}`) in <#{msg.Channel.Id}>\n{string.Join('\n', lines)}");
 
         try
         {
